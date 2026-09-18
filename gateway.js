@@ -85,24 +85,72 @@ function pick(...values) {
 }
 
 /**
- * Default model list. Upstream ids change over time - re-verify with
- * `node probes/probe-models.js` and adjust.
+ * Default model list.
  *
- * Availability and reasoning capability of this exact list were observed on
- * 2026-09 against a CN account; see README for the matrix.
+ * Every id here was probed against the upstream on 2026-09 (see
+ * `probes/probe-models.js`); the multiplier comes from the upstream catalog
+ * `/v3/config` `credits` field — **not** from marketing docs, which are stale
+ * (they advertise DeepSeek-V4-Flash as x0.06 while the catalog says x0.17).
+ *
+ * Two things the pricing depends on, in order of impact:
+ *
+ * 1. **The model id.** `hy4-preview-f` is x0.00 and bills 0 even on a 23k-token
+ *    prompt; `hy4-preview` is x0.29 and bills on every request. They differ by a
+ *    single `-f`, and the official client's UI labels *both* as "Hy4 preview" —
+ *    the client actually uses `hy4-preview-f`. Pick the free one by default.
+ * 2. **Prefix cache hits.** A repeated prompt prefix with a stable
+ *    `prompt_cache_key` drops the billed amount by roughly an order of magnitude
+ *    (measured: 0.68 → 0.04). That is why this gateway injects the key.
+ *
+ * Ids present in the catalog but returning `11102 service info not found` are
+ * excluded: minimax-m2.5, glm-4.6v, glm-4.6, kimi-k2-thinking,
+ * kimi-k2-instruct-taiji, deepseek-v3-1-volc, deepseek-v3-1, deepseek-r1-0528,
+ * deepseek-v3-0324-taco-completion, completion-gf, default-1.1, default-1.2,
+ * hunyuan-3b, hunyuan-7b-dense, codewise-completions.
+ * `hunyuan-image-alpha*` returns 11103 (not a chat backend) and the
+ * `codewise-*`/`completion-*` ids are completion models rather than chat models.
  */
-const DEFAULT_MODELS = [
-  // Hunyuan (Hy)
-  'auto', 'hy4-preview', 'hy4-preview-f', 'hy3', 'hy3-preview', 'hy3-preview-agent',
-  // Zhipu GLM
-  'glm-5.3', 'glm-5.3-flash', 'glm-5.2', 'glm-5.1', 'glm-5v-turbo',
-  // Moonshot Kimi
-  'kimi-k3', 'kimi-k2.7', 'kimi-k2.6', 'kimi-k2.5',
-  // MiniMax
-  'minimax-m3', 'minimax-m2.7',
-  // DeepSeek
-  'deepseek-v4-pro', 'deepseek-v4-flash', 'deepseek-v3.2',
+const FREE_MODELS = [
+  'auto',                     // resolves to hy4-preview-f upstream
+  'hy4-preview-f',            // the id the official client actually uses
+  'hy3',                      // x0.00
+  'glm-5.3-flash', 'glm-5.1', 'glm-5.0-turbo',
+  'kimi-k2.7', 'kimi-k2.6', 'kimi-k2.5',
+  'minimax-m2.7',
+  'deepseek-v4-flash', 'deepseek-v3.2',
 ];
+
+const PAID_MODELS = [
+  'deepseek-v4.1-flash',      // x0.03  lowest multiplier available
+  'hy3-x',                    // x0.05
+  'fast-model',               // x0.21
+  'minimax-m3',               // x0.25
+  'hy4-preview',              // x0.29  NOT the official "Hy4 preview"
+  'deepseek-v3-2-volc',       // x0.29
+  'deepseek-v4-pro',          // x0.51
+  'deepseek-v3-1-lkeap',      // x0.52
+  'deepseek-v3-0324-lkeap',   // x0.52
+  'balanced-model',           // x0.65
+  'glm-5v-turbo',             // x0.71
+  'kimi-k2.8-preview',        // x0.77
+  'glm-5.3',                  // x0.79
+  'glm-5.2',                  // x0.79
+  'deep-model',               // x1.20
+  'kimi-k3',                  // x1.62
+  'kimi-k3-1',                // x1.62  most expensive
+  'deepseek-r1-0528-lkeap',   // catalog lists no multiplier
+  'deepseek-v3-0324',         // catalog lists no multiplier
+  'hunyuan-2.0-instruct',     // catalog lists no multiplier
+];
+
+const DEFAULT_MODELS = [...FREE_MODELS, ...PAID_MODELS];
+
+/** Whether a model bills credits: "free" | "paid" | "unknown". */
+function modelTier(id) {
+  if (PAID_MODELS.includes(id)) return 'paid';
+  if (FREE_MODELS.includes(id)) return 'free';
+  return 'unknown';
+}
 
 const CONFIG = {
   host: pick(args.host, process.env.WORKBUDDY_GATEWAY_HOST, fileConfig.host, '127.0.0.1'),
@@ -184,6 +232,9 @@ function readBody(req) {
 // ---------------------------------------------------------------------------
 
 let credential = null;
+
+/** Paid models already warned about, so the log is not flooded. */
+const warnedPaid = new Set();
 
 async function callUpstream(body) {
   const headers = await credential.ensureFresh();
@@ -268,6 +319,15 @@ async function handleChat(req, res) {
   const model = payload.model || 'auto';
   const t0 = Date.now();
 
+  // A paid model bills on every request; say so once per model so a long
+  // session cannot quietly drain credits.
+  if (modelTier(model) === 'paid' && !warnedPaid.has(model)) {
+    warnedPaid.add(model);
+    log('paid model in use | model=' + model
+      + ' - billed per request (~0.17 on a 23k-token prompt).'
+      + ' Free alternatives: hy4-preview-f / auto / deepseek-v4-flash');
+  }
+
   // Outbound context: the account uid isolates the prompt cache key per account,
   // the session id keeps it stable inside one conversation.
   const ctx = {
@@ -298,9 +358,12 @@ async function handleChat(req, res) {
       return sendJson(res, out.status, openaiError(String(out.text).slice(0, 500), 'upstream_error', out.status));
     }
     const r = out.result;
+    const ru = r.usage || {};
     log('chat | model=' + model + ' | non-stream' + (out.retried ? ' | recovered on retry' : '')
       + ' | ' + (Date.now() - t0) + 'ms | finish=' + r.choices[0].finish_reason
-      + ' | tokens=' + (r.usage && r.usage.total_tokens));
+      + ' | tokens=' + ru.total_tokens
+      + ' | credit=' + (ru.credit === undefined ? '?' : ru.credit)
+      + ' | cache_hit=' + (ru.prompt_cache_hit_tokens === undefined ? '?' : ru.prompt_cache_hit_tokens));
     return sendJson(res, 200, r);
   }
 
@@ -374,9 +437,12 @@ async function handleChat(req, res) {
   res.write(SSE_DONE);
   res.end();
 
+  const uu = (acc && acc.usage) || {};
   log('chat | model=' + model + ' | stream' + (retried ? ' | recovered on retry' : '')
     + ' | ' + (Date.now() - t0) + 'ms | finish=' + (acc && acc.finishReason)
-    + ' | tokens=' + (acc && acc.usage && acc.usage.total_tokens));
+    + ' | tokens=' + uu.total_tokens
+    + ' | credit=' + (uu.credit === undefined ? '?' : uu.credit)
+    + ' | cache_hit=' + (uu.prompt_cache_hit_tokens === undefined ? '?' : uu.prompt_cache_hit_tokens));
 }
 
 // ---------------------------------------------------------------------------
@@ -415,7 +481,14 @@ const server = http.createServer(async (req, res) => {
       if (!checkAuth(req)) return sendJson(res, 401, openaiError('invalid api key', 'auth_error', 401));
       return sendJson(res, 200, {
         object: 'list',
-        data: CONFIG.models.map(id => ({ id, object: 'model', created: 1700000000, owned_by: 'workbuddy' })),
+        data: CONFIG.models.map(id => ({
+          id,
+          object: 'model',
+          created: 1700000000,
+          owned_by: 'workbuddy',
+          // measured: free = credit is always 0, paid = billed per request
+          tier: modelTier(id),
+        })),
       });
     }
 
@@ -478,7 +551,8 @@ function main() {
   log('auth file : ' + s.file);
   log('account   : domain=' + s.domain
     + (s.token_expired ? ' | token expired (will refresh)' : ' | token valid to ' + s.token_expires_at));
-  log('models    : ' + CONFIG.models.length + ' (' + CONFIG.models.join(', ') + ')');
+  log('free models : ' + CONFIG.models.filter(m => modelTier(m) === 'free').join(', '));
+  log('paid models : ' + CONFIG.models.filter(m => modelTier(m) === 'paid').join(', '));
   log('filter    : desensitize=' + (CONFIG.desensitize ? 'on' : 'off') + ' blockRetry=' + (CONFIG.retryOnBlock ? 'on' : 'off'));
   log('auth      : ' + (CONFIG.apiKey ? 'api key required' : 'no api key (local use only)'));
   log('listening : http://' + CONFIG.host + ':' + CONFIG.port);
