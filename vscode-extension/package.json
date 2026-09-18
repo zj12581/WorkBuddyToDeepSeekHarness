@@ -1,0 +1,106 @@
+{
+  "name": "workbuddy-agent",
+  "displayName": "WorkBuddy Agent",
+  "description": "Use your locally signed-in WorkBuddy / CodeBuddy account inside VS Code, via the local workbuddy-gateway.",
+  "version": "0.1.0",
+  "publisher": "local",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./src/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "workbuddy-agent",
+          "title": "WorkBuddy Agent",
+          "icon": "$(hubot)"
+        }
+      ]
+    },
+    "views": {
+      "workbuddy-agent": [
+        {
+          "type": "webview",
+          "id": "workbuddyAgent.chatView",
+          "name": "Chat"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "workbuddyAgent.open",
+        "title": "WorkBuddy Agent: Open Chat"
+      },
+      {
+        "command": "workbuddyAgent.newChat",
+        "title": "WorkBuddy Agent: New Chat"
+      },
+      {
+        "command": "workbuddyAgent.setGateway",
+        "title": "WorkBuddy Agent: Set Gateway URL"
+      },
+      {
+        "command": "workbuddyAgent.setApiKey",
+        "title": "WorkBuddy Agent: Set API Key"
+      },
+      {
+        "command": "workbuddyAgent.refreshModels",
+        "title": "WorkBuddy Agent: Refresh Model List"
+      },
+      {
+        "command": "workbuddyAgent.explainSelection",
+        "title": "WorkBuddy Agent: Explain Selection",
+        "enablement": "editorHasSelection"
+      }
+    ],
+    "configuration": {
+      "title": "WorkBuddy Agent",
+      "properties": {
+        "workbuddyAgent.gatewayUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:8790",
+          "description": "Base URL of the local workbuddy-gateway (no trailing /v1)."
+        },
+        "workbuddyAgent.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "API key expected by the gateway. Leave empty if the gateway runs without one."
+        },
+        "workbuddyAgent.model": {
+          "type": "string",
+          "default": "hy4-preview-f",
+          "description": "Default model id. hy4-preview-f is free; hy4-preview bills credits."
+        },
+        "workbuddyAgent.maxToolSteps": {
+          "type": "number",
+          "default": 12,
+          "description": "Maximum number of tool calls issued per turn."
+        },
+        "workbuddyAgent.autoApproveFileWrites": {
+          "type": "boolean",
+          "default": false,
+          "description": "Approve file writes without asking. Off by default: write tools confirm first."
+        },
+        "workbuddyAgent.autoApproveTerminal": {
+          "type": "boolean",
+          "default": false,
+          "description": "Approve terminal commands without asking. Off by default."
+        }
+      }
+    }
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.74.0"
+  },
+  "scripts": {
+    "vscode:prepublish": "echo no-build-step"
+  }
+}

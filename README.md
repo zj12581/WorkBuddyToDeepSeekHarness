@@ -100,35 +100,58 @@ node probes/probe-block.js                    # terminal 2: all five cases pass
 
 Observed on 2026-09 with a CN account. **This table is data, not documentation** — re-run `node probes/probe-models.js` and `node probes/probe-thinking.js` to refresh it. Upstream ids change without notice.
 
-| Model id | Available | Separate reasoning channel | Notes |
-|---|---|---|---|
-| `auto` | ✅ | ✅ | resolves to `hy4-preview-f` upstream |
-| `hy4-preview` | ✅ | ✅ | Hunyuan |
-| `hy4-preview-f` | ✅ | ✅ | fast variant |
-| `hy3` | ✅ | ❌ | |
-| `hy3-preview` | ✅ | ❌ | |
-| `hy3-preview-agent` | ✅ | ❌ | agent-tuned; only probed, not exercised by an agent |
-| `glm-5.3` | ✅ | ✅ | |
-| `glm-5.3-flash` | ✅ | ✅ | |
-| `glm-5.2` | ✅ | ❌ | 1M context per vendor docs |
-| `glm-5.1` | ✅ | ❌ | |
-| `glm-5v-turbo` | ✅ | ❌ | multimodal |
-| `kimi-k3` | ✅ | ✅ | |
-| `kimi-k2.7` | ✅ | ✅ | |
-| `kimi-k2.6` | ✅ | ❌ | |
-| `kimi-k2.5` | ✅ | ❌ | |
-| `minimax-m3` | ✅ | ❌ | multimodal |
-| `minimax-m2.7` | ✅ | ✅ | |
-| `deepseek-v4-pro` | ✅ | ❌ | 1M context per vendor docs |
-| `deepseek-v4-flash` | ✅ | ❌ | 1M context per vendor docs |
-| `deepseek-v3.2` | ✅ | ❌ | |
+The **multiplier** column is the upstream `/v3/config` `credits` field. It is a list price, not always what you actually pay: several models with a non-zero multiplier measured `credit=0`, and `hy4-preview-f` is free at any prompt size.
 
-Ids that do **not** exist (the upstream answers `11102 service info not found`): `hy4`, `hy4-preview-agent`, `hy3-preview-f`, `hunyuan`, `hunyuan-turbo`, `kimi-k2.7-code`.
+| Model id | Mult. | Context | Out | Free | Reasoning | Vision |
+|---|---|---|---|---|---|---|
+| `auto` (→ `hy4-preview-f`) | — | 256K | 32K | ✅ | ✅ | ✅ |
+| `hy4-preview-f` | **x0.00** | 1M | 64K | ✅ | ✅ | ✅ |
+| `hy3` | **x0.00** | 192K | 64K | ✅ | ✅ | ✅ |
+| `glm-5.3-flash` | x0.06 | 1M | 32K | ✅ | ✅ | ✅ |
+| `glm-5.1` | x0.79 | 200K | 48K | ✅ | ✅ | ✅ |
+| `glm-5.0-turbo` | x0.95 | 200K | 48K | ✅ | ✅ | ✅ |
+| `kimi-k2.7` | x0.57 | 256K | 32K | ✅ | ✅ | ✅ |
+| `kimi-k2.6` | x0.52 | 256K | 32K | ✅ | ✅ | ✅ |
+| `kimi-k2.5` | x0.45 | 256K | 32K | ✅ | ✅ | ✅ |
+| `minimax-m2.7` | x0.26 | 200K | 48K | ✅ | ✅ | ✅ |
+| `deepseek-v4-flash` | x0.17 | 1M | 50K | ✅ | ✅ | ✅ |
+| `deepseek-v3.2` | x0.29 | 96K | 32K | ✅ | ✅ | ✅ |
+| `deepseek-v4.1-flash` | **x0.03** | 1M | 128K | — | ✅ | ✅ |
+| `hy3-x` | x0.05 | 192K | 64K | — | ✅ | ✅ |
+| `fast-model` | x0.21 | 300K | 48K | — | ✅ | ✅ |
+| `minimax-m3` | x0.25 | 512K | 64K | — | ✅ | ✅ |
+| `hy4-preview` | x0.29 | 1M | 64K | — | ✅ | ✅ |
+| `deepseek-v3-2-volc` | x0.29 | 96K | 32K | — | ✅ | ✅ |
+| `deepseek-v4-pro` | x0.51 | 1M | 128K | — | ✅ | ✅ |
+| `deepseek-v3-1-lkeap` | x0.52 | 96K | 32K | — | — | ✅ |
+| `deepseek-v3-0324-lkeap` | x0.52 | 112K | 16K | — | — | ✅ |
+| `balanced-model` | x0.65 | 300K | 48K | — | ✅ | ✅ |
+| `glm-5v-turbo` | x0.71 | 200K | 64K | — | ✅ | ✅ |
+| `kimi-k2.8-preview` | x0.77 | 1M | 64K | — | ✅ | ✅ |
+| `glm-5.3` | x0.79 | 1M | 64K | — | ✅ | ✅ |
+| `glm-5.2` | x0.79 | 1M | 64K | — | ✅ | ✅ |
+| `deep-model` | x1.20 | 300K | 48K | — | ✅ | ✅ |
+| `kimi-k3` | x1.62 | 256K | 32K | — | ✅ | ✅ |
+| `kimi-k3-1` | x1.62 | 1M | 32K | — | ✅ | ✅ |
+| `deepseek-r1-0528-lkeap` | — | 96K | 16K | — | — | ✅ |
+| `deepseek-v3-0324` | — | 96K | 8K | — | — | — |
+| `hunyuan-2.0-instruct` | — | 128K | 16K | — | ✅ | ✅ |
+
+**"Free" means the upstream reports `credit: 0`,** verified by both the per-request `usage.credit` field and the balance endpoint. It does *not* mean "the multiplier is 0" — `glm-5.1` is listed at x0.79 yet bills nothing, and `deepseek-v3.2` is x0.29 but free.
+
+Ids that do **not** exist even though the catalog lists them (the upstream answers `11102 service info not found`): `minimax-m2.5`, `glm-4.6v`, `glm-4.6`, `kimi-k2-thinking`, `kimi-k2-instruct-taiji`, `deepseek-v3-1-volc`, `deepseek-v3-1`, `deepseek-r1-0528`, `deepseek-v3-0324-taco-completion`, `completion-gf`, `default-1.1`, `default-1.2`, `hunyuan-3b`, `hunyuan-7b-dense`, `codewise-completions`. `hunyuan-image-alpha*` answers `11103` (not a chat backend) and the `codewise-*` ids are completion models. All of them are excluded from the default list.
+
+### What actually drives the bill
+
+1. **The model id.** `hy4-preview-f` is free even on a 23k-token prompt; `hy4-preview` bills ~0.17 on the same prompt. They differ by one `-f`, and the official client's UI labels *both* as "Hy4 preview" — the client itself uses `hy4-preview-f`.
+2. **Prefix cache hits.** With a stable `prompt_cache_key`, a repeated prefix measured **0.68 → 0.04** on `deepseek-v4-flash`, and 22,656 of 22,735 prompt tokens were served from cache on a follow-up turn. On a long agent session this matters more than the multiplier.
 
 Two practical consequences:
 
 - A model with **no** reasoning channel must be declared non-reasoning in your client. Otherwise the client sends `reasoning_effort` that the model ignores, and any "thinking" the client displays is fabricated by the client, not the model.
-- A model **with** a reasoning channel spends its output budget on reasoning first. If `max_tokens` is too small the answer comes back empty with `finish_reason: "length"` — pass a generous budget for reasoning models.
+- A model **with** a reasoning channel spends its output budget on reasoning first. If `max_tokens` is too small the answer comes back empty with `finish_reason: "length"` — pass a generous budget for reasoning models. (The gateway translates `max_completion_tokens` to `max_tokens` for exactly this reason; the upstream ignores the alias and falls back to its own default cap.)
+
+> The product documentation is stale on pricing: it advertises `deepseek-v4-flash` as x0.06, the catalog says x0.17, and the cheapest model actually available is `deepseek-v4.1-flash` at x0.03. Trust `/v3/config` and `usage.credit`, not the docs.
 
 ## Configuration
 
