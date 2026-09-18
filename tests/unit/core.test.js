@@ -268,3 +268,219 @@ test('makeChunk / makeUsageChunk / sseFrame: emit parseable OpenAI frames', () =
   assert.deepStrictEqual(JSON.parse(frame.slice(6).trim()), chunk);
   assert.strictEqual(core.SSE_DONE, 'data: [DONE]\n\n');
 });
+
+// ---------------------------------------------------------------------------
+// Fix 1: prompt_cache_key
+// ---------------------------------------------------------------------------
+
+// A fake uid - never a real account id.
+const UID_A = 'testuser-1234';
+const UID_B = 'otheruser-9999';
+
+test('buildPromptCacheKey: stable per account+conversation, distinct otherwise', () => {
+  const a1 = core.buildPromptCacheKey(UID_A, 'conv-1');
+  const a2 = core.buildPromptCacheKey(UID_A, 'conv-1');
+  const a3 = core.buildPromptCacheKey(UID_A, 'conv-2');
+  const b1 = core.buildPromptCacheKey(UID_B, 'conv-1');
+
+  assert.strictEqual(a1, a2, 'same uid + same conversation must be stable across calls');
+  assert.notStrictEqual(a1, a3, 'a different conversation must produce a different key');
+  assert.notStrictEqual(a1, b1, 'a different account must never collide with another one');
+
+  // Format: wb-<uid first 8 chars>-<16 hex chars>.
+  assert.match(a1, /^wb-testuser-[0-9a-f]{16}$/);
+  assert.match(b1, /^wb-otheruse-[0-9a-f]{16}$/);
+});
+
+test('buildPromptCacheKey: degrades gracefully when the uid is missing', () => {
+  assert.match(core.buildPromptCacheKey('', 'conv-1'), /^wb---[0-9a-f]{16}$/);
+  assert.match(core.buildPromptCacheKey(undefined, undefined), /^wb---[0-9a-f]{16}$/);
+});
+
+test('resolveConversationId: falls back to the first user message digest', () => {
+  // No conversation field, no session header: the opening user message is the anchor.
+  const payload = { messages: [{ role: 'system', content: 'be nice' }, { role: 'user', content: 'hello there' }] };
+  const id = core.resolveConversationId(payload, '');
+
+  assert.ok(id.startsWith('firstmsg-'), 'the fallback should be a firstmsg digest, got ' + id);
+  assert.strictEqual(id, core.resolveConversationId(payload, ''), 'the digest must be stable');
+  assert.notStrictEqual(id, core.resolveConversationId({ messages: [{ role: 'user', content: 'something else' }] }, ''));
+});
+
+test('resolveConversationId: conversations sharing a prefix share an id', () => {
+  // Turn 1 and turn 2 of one conversation: identical head, different tail. The
+  // opening user message stays at the head, so both turns must hash the same.
+  const head = [
+    { role: 'system', content: 'you are helpful' },
+    { role: 'user', content: 'explain DNS' },
+  ];
+  const turn1 = { messages: [...head] };
+  const turn2 = { messages: [...head, { role: 'assistant', content: 'DNS is ...' }, { role: 'user', content: 'and DHCP?' }] };
+
+  assert.strictEqual(core.resolveConversationId(turn1, ''), core.resolveConversationId(turn2, ''),
+    'later turns of one conversation must reuse the same cache key');
+});
+
+test('resolveConversationId: prefers body field, then session id, then metadata', () => {
+  const withBody = { conversation_id: 'body-1', messages: [{ role: 'user', content: 'x' }] };
+  assert.strictEqual(core.resolveConversationId(withBody, 'hdr-1'), 'body-1');
+  assert.strictEqual(core.resolveConversationId({ conversationId: 'body-2' }, 'hdr-1'), 'body-2');
+
+  assert.strictEqual(core.resolveConversationId({ messages: [{ role: 'user', content: 'x' }] }, 'hdr-1'), 'hdr-1');
+
+  const withMeta = { metadata: { conversation_id: 'meta-1' }, messages: [{ role: 'user', content: 'x' }] };
+  assert.strictEqual(core.resolveConversationId(withMeta, ''), 'meta-1');
+
+  // Empty session id falls through instead of returning "".
+  assert.strictEqual(core.resolveConversationId(withBody, undefined), 'body-1');
+});
+
+test('sessionIdFromHeaders: accepts every known spelling', () => {
+  assert.strictEqual(core.sessionIdFromHeaders({ 'x-conversation-id': 'a' }), 'a');
+  assert.strictEqual(core.sessionIdFromHeaders({ 'x-conversation-request-id': 'b' }), 'b');
+  assert.strictEqual(core.sessionIdFromHeaders({ session_id: 'c' }), 'c');
+  assert.strictEqual(core.sessionIdFromHeaders({ 'x-session-id': 'd' }), 'd');
+  assert.strictEqual(core.sessionIdFromHeaders({ 'x-client-request-id': 'e' }), 'e');
+  assert.strictEqual(core.sessionIdFromHeaders({ 'x-session-affinity': 'f' }), 'f');
+  assert.strictEqual(core.sessionIdFromHeaders({ conversation_id: 'g' }), 'g');
+  assert.strictEqual(core.sessionIdFromHeaders({}), '');
+  assert.strictEqual(core.sessionIdFromHeaders(undefined), '');
+  assert.strictEqual(core.sessionIdFromHeaders({ 'x-session-id': '   ' }), '', 'blank values are ignored');
+});
+
+test('injectPromptCacheKey: never overwrites a client-supplied key', () => {
+  const body = { prompt_cache_key: 'client-owned' };
+  core.injectPromptCacheKey(body, { messages: [] }, UID_A, 'sess-1');
+  assert.strictEqual(body.prompt_cache_key, 'client-owned');
+});
+
+test('buildUpstreamBody: injects a prompt_cache_key derived from uid + conversation', () => {
+  const payload = { model: 'auto', messages: [{ role: 'user', content: 'hi' }] };
+  const body = core.buildUpstreamBody(payload, false, {
+    desensitize: true, uid: UID_A, conversationId: 'conv-42',
+  });
+  assert.strictEqual(body.prompt_cache_key, core.buildPromptCacheKey(UID_A, 'conv-42'));
+
+  // No conversation id at all: still gets a key, via the first user message.
+  const bare = core.buildUpstreamBody(payload, false, { desensitize: true });
+  assert.strictEqual(bare.prompt_cache_key, core.buildPromptCacheKey('', core.resolveConversationId(payload, '')));
+});
+
+// ---------------------------------------------------------------------------
+// Fix 2: max_completion_tokens -> max_tokens
+// ---------------------------------------------------------------------------
+
+test('translateMaxCompletionTokens: a positive integer becomes max_tokens', () => {
+  const body = { max_completion_tokens: 4096 };
+  core.translateMaxCompletionTokens(body);
+  assert.strictEqual(body.max_tokens, 4096);
+  assert.strictEqual(body.max_completion_tokens, undefined, 'the alias must always be dropped');
+});
+
+test('translateMaxCompletionTokens: an explicit max_tokens wins and the alias is only dropped', () => {
+  const body = { max_tokens: 512, max_completion_tokens: 4096 };
+  core.translateMaxCompletionTokens(body);
+  assert.strictEqual(body.max_tokens, 512, 'the explicit value must not be overwritten');
+  assert.strictEqual(body.max_completion_tokens, undefined, 'the alias is dropped without being translated');
+});
+
+test('translateMaxCompletionTokens: zero, negative, fractional and non-numbers are not translated', () => {
+  for (const bad of [0, -1, 12.5, '4096', null, NaN, Infinity]) {
+    const body = { max_completion_tokens: bad };
+    core.translateMaxCompletionTokens(body);
+    assert.strictEqual(body.max_tokens, undefined, 'should not translate ' + JSON.stringify(bad));
+    assert.strictEqual(body.max_completion_tokens, undefined, 'alias must still be dropped for ' + JSON.stringify(bad));
+  }
+});
+
+test('translateMaxCompletionTokens: absent alias leaves the body untouched', () => {
+  const body = { max_tokens: 100 };
+  core.translateMaxCompletionTokens(body);
+  assert.deepStrictEqual(body, { max_tokens: 100 });
+});
+
+// ---------------------------------------------------------------------------
+// Fix 3: tool_choice normalization
+// ---------------------------------------------------------------------------
+
+test('normalizeToolChoice: "none" and {type:"none"} drop tool_choice, tools and functions', () => {
+  const tools = [{ type: 'function', function: { name: 'f' } }];
+
+  const a = { tool_choice: 'none', tools, functions: [{ name: 'legacy' }] };
+  core.normalizeToolChoice(a);
+  assert.strictEqual(a.tool_choice, undefined);
+  assert.strictEqual(a.tools, undefined, 'tools must go too, otherwise the model may still call them');
+  assert.strictEqual(a.functions, undefined);
+
+  const b = { tool_choice: { type: 'none' }, tools };
+  core.normalizeToolChoice(b);
+  assert.strictEqual(b.tool_choice, undefined);
+  assert.strictEqual(b.tools, undefined);
+});
+
+test('normalizeToolChoice: {type:"auto"|"required"} becomes the matching string', () => {
+  const auto = { tool_choice: { type: 'auto' } };
+  core.normalizeToolChoice(auto);
+  assert.strictEqual(auto.tool_choice, 'auto');
+
+  const required = { tool_choice: { type: 'required' } };
+  core.normalizeToolChoice(required);
+  assert.strictEqual(required.tool_choice, 'required');
+});
+
+test('normalizeToolChoice: a named function becomes its name string', () => {
+  const a = { tool_choice: { type: 'function', function: { name: 'get_weather' } } };
+  core.normalizeToolChoice(a);
+  assert.strictEqual(a.tool_choice, 'get_weather');
+
+  const b = { tool_choice: { name: 'search' } };
+  core.normalizeToolChoice(b);
+  assert.strictEqual(b.tool_choice, 'search');
+});
+
+test('normalizeToolChoice: a named function with no name falls back to "auto"', () => {
+  const a = { tool_choice: { type: 'function', function: {} } };
+  core.normalizeToolChoice(a);
+  assert.strictEqual(a.tool_choice, 'auto');
+
+  const b = { tool_choice: { type: 'function' } };
+  core.normalizeToolChoice(b);
+  assert.strictEqual(b.tool_choice, 'auto');
+
+  // A malformed function payload counts as an empty name as well.
+  const c = { tool_choice: { type: 'function', function: 42 } };
+  core.normalizeToolChoice(c);
+  assert.strictEqual(c.tool_choice, 'auto');
+});
+
+test('normalizeToolChoice: unrecognized shapes are dropped', () => {
+  for (const bad of [{ type: 'bogus' }, {}, [], 123]) {
+    const body = { tool_choice: bad };
+    core.normalizeToolChoice(body);
+    assert.strictEqual(body.tool_choice, undefined, 'should drop ' + JSON.stringify(bad));
+  }
+});
+
+test('normalizeToolChoice: a plain string other than "none" is left alone', () => {
+  for (const keep of ['auto', 'required', 'get_weather']) {
+    const body = { tool_choice: keep };
+    core.normalizeToolChoice(body);
+    assert.strictEqual(body.tool_choice, keep);
+  }
+  assert.strictEqual(core.normalizeToolChoice({}).tool_choice, undefined, 'absent field stays absent');
+});
+
+test('buildUpstreamBody: applies the max_tokens and tool_choice fixes end to end', () => {
+  const body = core.buildUpstreamBody({
+    model: 'auto',
+    messages: [{ role: 'user', content: 'hi' }],
+    max_completion_tokens: 8000,
+    tool_choice: { type: 'function', function: { name: 'get_weather' } },
+    tools: [{ type: 'function', function: { name: 'get_weather' } }],
+  }, false, { desensitize: true, uid: UID_A, conversationId: 'conv-1' });
+
+  assert.strictEqual(body.max_tokens, 8000, 'the alias must reach the upstream as max_tokens');
+  assert.strictEqual(body.max_completion_tokens, undefined);
+  assert.strictEqual(body.tool_choice, 'get_weather', 'the upstream only accepts a string here');
+  assert.ok(body.prompt_cache_key, 'a cache key must be present');
+});

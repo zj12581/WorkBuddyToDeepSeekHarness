@@ -36,6 +36,7 @@ const os = require('os');
 const {
   buildUpstreamBody, isBlockPayload, StreamAccumulator,
   makeChunk, makeUsageChunk, SSE_DONE, sseFrame, countZeroWidth,
+  sessionIdFromHeaders, resolveConversationId,
 } = require('./lib/core');
 const { Credential } = require('./lib/credentials');
 
@@ -205,16 +206,26 @@ async function collect(upstreamRes, onDelta) {
 /**
  * Non-streaming path: aggregate, retrying with heavier desensitization when the
  * upstream rejects the request on security grounds.
+ *
+ * `ctx` carries { uid, sessionId }: the account uid is the hard isolation
+ * segment of the prompt cache key, the session id is its conversation segment.
  */
-async function completeOnce(payload) {
+async function completeOnce(payload, ctx) {
+  const context = ctx || {};
   let lastErr = null;
   for (const aggressive of [false, true]) {
     if (aggressive && !CONFIG.retryOnBlock) break;
-    const body = buildUpstreamBody(payload, aggressive, { desensitize: CONFIG.desensitize });
+    const body = buildUpstreamBody(payload, aggressive, {
+      desensitize: CONFIG.desensitize,
+      uid: context.uid,
+      conversationId: resolveConversationId(payload, context.sessionId),
+    });
     if (CONFIG.debug) {
       log('attempt ' + (aggressive ? 2 : 1) + ' | aggressive=' + aggressive
         + ' | roles=' + body.messages.map(m => m.role).join(',')
-        + ' | zero-width=' + countZeroWidth(body));
+        + ' | zero-width=' + countZeroWidth(body)
+        + ' | cache_key=' + body.prompt_cache_key
+        + ' | max_tokens=' + (body.max_tokens === undefined ? '(unset)' : body.max_tokens));
     }
 
     const res = await callUpstream(body);
@@ -257,9 +268,30 @@ async function handleChat(req, res) {
   const model = payload.model || 'auto';
   const t0 = Date.now();
 
+  // Outbound context: the account uid isolates the prompt cache key per account,
+  // the session id keeps it stable inside one conversation.
+  const ctx = {
+    uid: (() => { try { return String(credential.account().uid || ''); } catch { return ''; } })(),
+    sessionId: sessionIdFromHeaders(req.headers),
+  };
+  const cacheContext = () => ({
+    desensitize: CONFIG.desensitize,
+    uid: ctx.uid,
+    conversationId: resolveConversationId(payload, ctx.sessionId),
+  });
+  if (CONFIG.debug) {
+    log('inbound session | sessionId=' + (ctx.sessionId || '(none)')
+      + ' | body.conversation_id='
+      + (payload.conversation_id || payload.conversationId
+        || (payload.metadata && (payload.metadata.conversation_id || payload.metadata.conversationId))
+        || '(none)')
+      + ' | max_completion_tokens='
+      + (payload.max_completion_tokens === undefined ? '(none)' : payload.max_completion_tokens));
+  }
+
   if (!payload.stream) {
     let out;
-    try { out = await completeOnce(payload); }
+    try { out = await completeOnce(payload, ctx); }
     catch (e) { return sendJson(res, 502, openaiError('upstream unreachable: ' + e.message, 'upstream_error', 502)); }
     if (!out.ok) {
       log('upstream failed | model=' + model + ' | HTTP ' + out.status + ' | ' + String(out.text).slice(0, 200).replace(/\s+/g, ' '));
@@ -275,7 +307,7 @@ async function handleChat(req, res) {
   // Streaming. The answer is buffered before being written so that a mid-stream
   // block can still be retried instead of emitting half a response.
   let upstreamRes;
-  let body = buildUpstreamBody(payload, false, { desensitize: CONFIG.desensitize });
+  let body = buildUpstreamBody(payload, false, cacheContext());
   try { upstreamRes = await callUpstream(body); }
   catch (e) { return sendJson(res, 502, openaiError('upstream unreachable: ' + e.message, 'upstream_error', 502)); }
 
@@ -285,7 +317,7 @@ async function handleChat(req, res) {
     if (isBlockPayload(text) && CONFIG.retryOnBlock) {
       log('blocked by upstream security policy (HTTP), retrying with heavier desensitization: ' + text.slice(0, 120).replace(/\s+/g, ' '));
       try {
-        body = buildUpstreamBody(payload, true, { desensitize: CONFIG.desensitize });
+        body = buildUpstreamBody(payload, true, cacheContext());
         upstreamRes = await callUpstream(body);
         retried = true;
       } catch (e) { return sendJson(res, 502, openaiError('upstream unreachable: ' + e.message, 'upstream_error', 502)); }
@@ -312,7 +344,7 @@ async function handleChat(req, res) {
     log('blocked mid-stream, retrying with heavier desensitization: ' + String(acc.blockText).slice(0, 120));
     pending.length = 0;
     try {
-      const res2 = await callUpstream(buildUpstreamBody(payload, true, { desensitize: CONFIG.desensitize }));
+      const res2 = await callUpstream(buildUpstreamBody(payload, true, cacheContext()));
       if (res2.ok) { retried = true; acc = await collect(res2, sink); }
     } catch (e) { log('retry failed: ' + e.message); }
   }
