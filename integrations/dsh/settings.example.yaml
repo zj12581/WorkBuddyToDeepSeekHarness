@@ -1,0 +1,118 @@
+# Example DeepSeek Harness provider configuration for workbuddy-gateway.
+#
+# Merge the `llm-pi-ai` section into ~/.dsh/settings.yaml (or start from this file
+# if you do not have one yet), and add the API key to ~/.dsh/.credentials.yaml:
+#
+#   version: 1
+#   refs:
+#     WORKBUDDY_GATEWAY_API_KEY: workbuddy-local
+#
+# This block was validated against DSH: every model below loads without a
+# configuration diagnostic. Two schema rules it respects:
+#
+#   1. reasoningEfforts must be false, or a map with at least one level besides
+#      `off`. An `off`-only map is rejected by DSH.
+#   2. Models with no separate reasoning channel are declared `false`. Declaring
+#      thinking levels for them sends a reasoning_effort the model ignores.
+#
+# Model capability data comes from probes/probe-models.js and
+# probes/probe-thinking.js; see the matrix in README.md.
+
+llm-pi-ai:
+  providers:
+    workbuddy:
+      displayName: WorkBuddy (local gateway)
+      api: openai-completions
+      apiKeyEnv: WORKBUDDY_GATEWAY_API_KEY
+      baseURL: http://127.0.0.1:8790/v1
+      models:
+        - id: auto
+          name: Auto routing (WorkBuddy)
+          contextWindow: 262144
+          reasoningEfforts: &wbThinking
+            off: 'off'
+            minimal: minimal
+            low: low
+            medium: medium
+            high: high
+            xhigh: high
+        - id: hy4-preview
+          name: Hunyuan Hy4 (WorkBuddy)
+          contextWindow: 1048576
+          reasoningEfforts: *wbThinking
+        - id: hy4-preview-f
+          name: Hunyuan Hy4 Fast (WorkBuddy)
+          contextWindow: 1048576
+          reasoningEfforts: *wbThinking
+        - id: hy3
+          name: Hunyuan Hy3 (WorkBuddy)
+          contextWindow: 262144
+          reasoningEfforts: false
+        - id: hy3-preview
+          name: Hunyuan Hy3 Preview (WorkBuddy)
+          contextWindow: 262144
+          reasoningEfforts: false
+        - id: hy3-preview-agent
+          name: Hunyuan Hy3 Agent (WorkBuddy)
+          contextWindow: 262144
+          reasoningEfforts: false
+        - id: glm-5.3
+          name: GLM-5.3 (WorkBuddy)
+          contextWindow: 1048576
+          reasoningEfforts: *wbThinking
+        - id: glm-5.3-flash
+          name: GLM-5.3 Flash (WorkBuddy)
+          contextWindow: 1048576
+          reasoningEfforts: *wbThinking
+        - id: glm-5.2
+          name: GLM-5.2 (WorkBuddy)
+          contextWindow: 1048576
+          reasoningEfforts: false
+        - id: glm-5.1
+          name: GLM-5.1 (WorkBuddy)
+          contextWindow: 1048576
+          reasoningEfforts: false
+        - id: glm-5v-turbo
+          name: GLM-5V Turbo multimodal (WorkBuddy)
+          contextWindow: 262144
+          reasoningEfforts: false
+        - id: kimi-k3
+          name: Kimi K3 (WorkBuddy)
+          contextWindow: 262144
+          reasoningEfforts: *wbThinking
+        - id: kimi-k2.7
+          name: Kimi K2.7 (WorkBuddy)
+          contextWindow: 262144
+          reasoningEfforts: *wbThinking
+        - id: kimi-k2.6
+          name: Kimi K2.6 (WorkBuddy)
+          contextWindow: 262144
+          reasoningEfforts: false
+        - id: kimi-k2.5
+          name: Kimi K2.5 (WorkBuddy)
+          contextWindow: 262144
+          reasoningEfforts: false
+        - id: minimax-m3
+          name: MiniMax M3 multimodal (WorkBuddy)
+          contextWindow: 262144
+          reasoningEfforts: false
+        - id: minimax-m2.7
+          name: MiniMax M2.7 (WorkBuddy)
+          contextWindow: 262144
+          reasoningEfforts: *wbThinking
+        - id: deepseek-v4-pro
+          name: DeepSeek V4 Pro (WorkBuddy)
+          contextWindow: 1048576
+          reasoningEfforts: false
+        - id: deepseek-v4-flash
+          name: DeepSeek V4 Flash (WorkBuddy)
+          contextWindow: 1048576
+          reasoningEfforts: false
+        - id: deepseek-v3.2
+          name: DeepSeek V3.2 (WorkBuddy)
+          contextWindow: 262144
+# New sessions use this model. Switch an existing session from the GUI model
+# selector instead - the transcript is preserved.
+agent-default-model:
+  provider: workbuddy
+  model: hy4-preview

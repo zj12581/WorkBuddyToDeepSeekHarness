@@ -1,0 +1,54 @@
+{
+  "name": "workbuddy-gateway",
+  "version": "1.0.0",
+  "description": "Zero-dependency OpenAI-compatible gateway for a locally logged-in WorkBuddy / CodeBuddy account",
+  "license": "MIT",
+  "type": "commonjs",
+  "main": "gateway.js",
+  "bin": {
+    "workbuddy-gateway": "gateway.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "gateway.js",
+    "lib/",
+    "tests/smoke-test.js",
+    "probes/",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "scripts": {
+    "start": "node gateway.js",
+    "start:debug": "node gateway.js --debug",
+    "test": "node --test tests/unit/core.test.js",
+    "test:unit": "node --test tests/unit/core.test.js",
+    "test:smoke": "node tests/smoke-test.js",
+    "probe:models": "node probes/probe-models.js",
+    "probe:thinking": "node probes/probe-thinking.js",
+    "probe:reasoning": "node probes/probe-reasoning.js",
+    "probe:limits": "node probes/probe-limits.js",
+    "probe:block": "node probes/probe-block.js"
+  },
+  "keywords": [
+    "workbuddy",
+    "codebuddy",
+    "openai-compatible",
+    "openai-api",
+    "proxy",
+    "gateway",
+    "llm",
+    "deepseek-harness",
+    "ai-agent"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zj12581/WorkBuddyToDeepSeekHarness.git"
+  },
+  "bugs": {
+    "url": "https://github.com/zj12581/WorkBuddyToDeepSeekHarness/issues"
+  },
+  "homepage": "https://github.com/zj12581/WorkBuddyToDeepSeekHarness#readme"
+}

@@ -1,0 +1,53 @@
+{
+  "_comment": "Copy to ~/.workbuddy-gateway/config.json (or pass --config PATH). CLI flags and environment variables override these values. Never commit a file that contains a real apiKey.",
+
+  "host": "127.0.0.1",
+  "port": 8790,
+
+  "_apiKey": "Optional. Leave empty to accept any client on the loopback interface. Set one if more than one local app can reach this port.",
+  "apiKey": "",
+
+  "upstream": "https://copilot.tencent.com",
+
+  "_authFile": "Optional. Leave empty to auto-detect the desktop client's session file.",
+  "authFile": "",
+
+  "_models": "Optional. Replace the built-in list. Verify ids with: node probes/probe-models.js --json",
+  "models": [
+    "auto",
+    "hy4-preview",
+    "hy4-preview-f",
+    "hy3",
+    "hy3-preview",
+    "hy3-preview-agent",
+    "glm-5.3",
+    "glm-5.3-flash",
+    "glm-5.2",
+    "glm-5.1",
+    "glm-5v-turbo",
+    "kimi-k3",
+    "kimi-k2.7",
+    "kimi-k2.6",
+    "kimi-k2.5",
+    "minimax-m3",
+    "minimax-m2.7",
+    "deepseek-v4-pro",
+    "deepseek-v4-flash",
+    "deepseek-v3.2"
+  ],
+
+  "_desensitize": "Rewrite security vocabulary in system/developer messages so the upstream content filter stops rejecting agent preambles.",
+  "desensitize": true,
+
+  "_retryOnBlock": "Retry once with heavier desensitization if the upstream still rejects the request.",
+  "retryOnBlock": true,
+
+  "_logFile": "Optional. Append the structured log here as well as to stdout.",
+  "logFile": "",
+
+  "_debug": "Log per-attempt detail (byte sizes, role lists, zero-width counts).",
+  "debug": false,
+
+  "_exposeIdentity": "false keeps nickname/uid out of GET /health.",
+  "exposeIdentity": false
+}

@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: unit tests (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['18', '20', '22']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Syntax check every source file
+        run: |
+          for f in gateway.js lib/*.js tests/*.js tests/unit/*.js probes/*.js; do
+            node --check "$f"
+          done
+
+      - name: Unit tests
+        run: node --test tests/unit/core.test.js
+
+      - name: Verify the gateway fails cleanly with no account present
+        run: |
+          # Without an auth file the process must exit non-zero with a clear message
+          # rather than hanging or crashing with a stack trace.
+          set +e
+          HOME=/nonexistent LOCALAPPDATA=/nonexistent APPDATA=/nonexistent \
+            node gateway.js --port 0 2>&1 | tee /tmp/out.txt
+          code=${PIPESTATUS[0]}
+          set -e
+          test "$code" -ne 0
+          grep -q "no WorkBuddy/CodeBuddy auth file found" /tmp/out.txt

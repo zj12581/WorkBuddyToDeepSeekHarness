@@ -1,0 +1,31 @@
+# Dependencies (this project has none, but keep the file useful anyway)
+node_modules/
+package-lock.json
+
+# Runtime output: logs contain full request/response bodies - never commit them
+logs/
+*.log
+*.out.log
+*.err.log
+
+# Runtime state
+gateway.pid
+*.pid
+
+# Local configuration (may contain an API key)
+config.json
+.workbuddy-gateway/
+
+# Credentials must never enter the repository. The desktop client stores its
+# session in the app data directory, but people sometimes copy it around.
+*.info
+auths/
+auth/
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini

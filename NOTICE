@@ -1,0 +1,36 @@
+# NOTICE
+
+This project is licensed under the MIT License (see `LICENSE`).
+
+## Third-party material
+
+### codebuddy2openai — desensitization word list and technique
+
+- Source: https://github.com/HanHan666666/codebuddy2openai
+- File used as reference: `desensitize.py`
+- License: MIT
+- What was reused: the list of security vocabulary that the upstream content
+  filter falsely flags in agent compliance preambles, and the technique of
+  inserting a zero-width space (U+200B) inside each matched term to break the
+  filter's literal match while keeping the text readable.
+
+The implementation in this repository (`lib/core.js`, the `desensitize*`
+functions) is an independent JavaScript rewrite, but the word list is
+substantially derived from that project and is credited here accordingly.
+
+## Conceptual precedents
+
+The following projects solve the same general problem (exposing a Tencent
+CodeBuddy / WorkBuddy subscription as an OpenAI-compatible API). No code was
+taken from them, but they informed the design and are worth knowing about:
+
+- https://github.com/Sliverkiss/workbuddy2api — Go, multi-account gateway
+- https://github.com/weecliz/workbuddy2api — Go, desktop-session proxy
+- https://github.com/287775856/workbuddy2api-gui — web control panel
+
+## No upstream rights granted
+
+This project grants no rights to the upstream service it talks to. Tencent,
+CodeBuddy, WorkBuddy and any other product names mentioned here belong to their
+respective owners. Use of this software does not imply any affiliation with, or
+endorsement by, those owners.

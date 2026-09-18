@@ -1,0 +1,13 @@
+# Normalize line endings so the repository is identical on every platform.
+# The source is developed on Windows but CI and most consumers run on Linux/macOS.
+* text=auto eol=lf
+
+# Windows-only helper scripts, if any are ever added, keep CRLF
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary-ish assets
+*.png binary
+*.jpg binary
+*.ico binary
