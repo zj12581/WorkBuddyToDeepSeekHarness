@@ -28,10 +28,54 @@ There are already several proxy projects for the same subscription ([list in NOT
 
 Requires: the WorkBuddy / CodeBuddy **desktop client, signed in** (that is where the session lives), and Node ≥ 18.
 
+### One command
+
+The setup script finds your login, writes a config, starts the gateway and waits for a health check. It is idempotent — re-run it to repair, not to duplicate.
+
+**Windows**
+
+```powershell
+git clone https://github.com/zj12581/WorkBuddyToDeepSeekHarness.git
+cd WorkBuddyToDeepSeekHarness
+powershell -ExecutionPolicy Bypass -File scripts\setup.ps1
+```
+
+**macOS / Linux / WSL**
+
 ```bash
 git clone https://github.com/zj12581/WorkBuddyToDeepSeekHarness.git
 cd WorkBuddyToDeepSeekHarness
+bash scripts/setup.sh
+```
 
+Both wrap the same steps:
+
+| Step | What happens |
+|---|---|
+| 1 | checks Node ≥ 18 and locates `gateway.js` |
+| 2 | finds the desktop client's login (auto-detects, or `WORKBUDDY_AUTH_FILE`) |
+| 3 | verifies the upstream is reachable |
+| 4 | writes `~/.workbuddy-gateway/config.json` — only when absent |
+| 5 | stops any previous instance |
+| 6 | starts the gateway detached and waits for `/health` |
+| 7 | optionally installs the VS Code extension, if `code` is on `PATH` |
+
+Skip the extension step with `-SkipExtension` (PowerShell) or `--skip-extension` (bash). Stop it later with `scripts/stop.ps1` / `scripts/stop.sh`.
+
+```
+==> Checking Node.js                     v node v24.18.0
+==> Locating the WorkBuddy / CodeBuddy login
+    login: C:\Users\you\AppData\Local\CodeBuddyExtension\Data\Public\auth\workbuddy-desktop.info
+    account: (nickname)  domain: www.workbuddy.cn  token valid to: 2026-10-20T15:09
+==> Checking the upstream is reachable    v upstream responded (HTTP 200)
+==> Writing configuration                 v wrote C:\Users\you\.workbuddy-gateway\config.json
+==> Starting the gateway on 127.0.0.1:8790
+==> Waiting for the health check          v healthy - 32 models (12 free)
+```
+
+### Manual
+
+```bash
 # 1. real end-to-end check: models, non-streaming, streaming, native tool calls
 node tests/smoke-test.js
 
@@ -45,7 +89,29 @@ Then point any OpenAI-compatible client at:
 - **API key** whatever you passed to `--api-key` (or leave both empty for keyless local use)
 - **Model** one of the ids from `GET /v1/models`
 
-Working example for DeepSeek Harness: [`docs/dsh.md`](docs/dsh.md).
+Working examples: [DeepSeek Harness](docs/dsh.md) · [VS Code](vscode-extension/README.md).
+
+### Use it inside VS Code
+
+The extension in [`vscode-extension/`](vscode-extension/) makes the models show up in VS Code's own Chat view, so GitHub Copilot Chat (or any chat participant) drives them with its own agent loop and tools — this gateway only supplies the model.
+
+```bash
+cd vscode-extension && npx @vscode/vsce package     # produces workbuddy-agent-0.1.0.vsix
+code --install-extension workbuddy-agent-0.1.0.vsix
+```
+
+Restart VS Code, then pick a **WorkBuddy** model in the Chat view's model picker.
+
+### Running inside WSL
+
+WSL (NAT mode) has its own `127.0.0.1`, so a gateway bound to Windows loopback is not reachable from it — and on Windows 10 neither mirrored networking (needs Windows 11) nor `netsh portproxy` (needs admin) is available. The supported answer is a second instance **inside** WSL that reads the Windows login through `/mnt/c`, leaving the Windows gateway untouched:
+
+```bash
+bash wsl/start-gateway.sh     # listens on 127.0.0.1:8791 inside the VM
+bash wsl/stop-gateway.sh
+```
+
+The extension probes that port automatically.
 
 ### Verify without a client
 
@@ -54,7 +120,7 @@ curl -s http://127.0.0.1:8790/v1/models -H "Authorization: Bearer workbuddy-loca
 
 curl -s http://127.0.0.1:8790/v1/chat/completions \
   -H "Authorization: Bearer workbuddy-local" -H "Content-Type: application/json" \
-  -d '{"model":"hy4-preview","messages":[{"role":"user","content":"In one sentence, what is a CAN bus?"}]}'
+  -d '{"model":"hy4-preview-f","messages":[{"role":"user","content":"In one sentence, what is a CAN bus?"}]}'
 ```
 
 ## Endpoints

@@ -24,12 +24,44 @@ jobs:
 
       - name: Syntax check every source file
         run: |
-          for f in gateway.js lib/*.js tests/*.js tests/unit/*.js probes/*.js; do
+          for f in gateway.js lib/*.js tests/*.js tests/unit/*.js probes/*.js \
+                   vscode-extension/src/*.js; do
             node --check "$f"
           done
 
+      - name: Shell script syntax
+        run: |
+          bash -n scripts/setup.sh
+          bash -n scripts/stop.sh
+          bash -n wsl/start-gateway.sh
+          bash -n wsl/stop-gateway.sh
+          bash -n wsl/install-extension.sh
+
       - name: Unit tests
         run: node --test tests/unit/core.test.js
+
+      - name: Extension manifest is valid JSON with a version match
+        run: |
+          node -e '
+            const p = require("./vscode-extension/package.json");
+            if (!p.contributes.languageModelChatProviders) {
+              throw new Error("languageModelChatProviders contribution is missing");
+            }
+            if (!p.contributes.chatParticipants) {
+              throw new Error("chatParticipants contribution is missing");
+            }
+            if (!/^\^1\.(10[4-9]|[1-9][0-9]{2})/.test(p.engines.vscode)) {
+              throw new Error("engines.vscode must be >= 1.104 for the LM provider API, got " + p.engines.vscode);
+            }
+            console.log("extension manifest ok, version", p.version);
+          '
+
+      - name: The extension never ships local scratch files
+        run: |
+          # A stray _*.js in src/ would be packaged into the vsix.
+          if ls vscode-extension/src/_* vscode-extension/src/probe-* 2>/dev/null; then
+            echo "scratch files found in vscode-extension/src/"; exit 1
+          fi
 
       - name: Verify the gateway fails cleanly with no account present
         run: |
@@ -42,3 +74,19 @@ jobs:
           set -e
           test "$code" -ne 0
           grep -q "no WorkBuddy/CodeBuddy auth file found" /tmp/out.txt
+
+      - name: A config file with a UTF-8 BOM must still load
+        run: |
+          # PowerShell 5.1 and Notepad both write a BOM; JSON.parse rejects it unless
+          # the reader strips it first.
+          mkdir -p /tmp/bomcheck
+          printf '\xef\xbb\xbf{"port": 9911, "apiKey": "bom-test"}' > /tmp/bomcheck/config.json
+          set +e
+          HOME=/nonexistent LOCALAPPDATA=/nonexistent APPDATA=/nonexistent \
+            timeout 5 node gateway.js --config /tmp/bomcheck/config.json 2>&1 | tee /tmp/bom.txt
+          set -e
+          if grep -q "cannot read config file" /tmp/bom.txt; then
+            echo "BOM config rejected"; cat /tmp/bom.txt; exit 1
+          fi
+          echo "BOM config accepted"
+
