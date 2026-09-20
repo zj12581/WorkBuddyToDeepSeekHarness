@@ -81,6 +81,35 @@ gateway log (`--debug`) prints `credit=` for every call.
 `6004`, with a reset time in the message). If it errors, use `deepseek-v4-flash` — free
 and reliably available.
 
+## Checking your credit balance
+
+The extension does not display the account balance. Two ways to see it.
+
+**DeepSeek Harness** has a `/balance` command, from the plugin in
+[`../integrations/dsh/`](../integrations/dsh/README.md):
+
+```bash
+bash integrations/dsh/install-balance-plugin.sh
+```
+
+It reads the same login file and billing endpoint the desktop client uses, and reports
+remaining and consumed credits per package:
+
+```
+WorkBuddy balance — www.workbuddy.cn
+
+  2,352.63 / 3,000.00 credits remaining  (78.4%)
+  647.37 used
+```
+
+**Inside VS Code**, watch the per-session credit total the agent panel shows, and read
+`credit=` in the gateway log when it runs with `--debug`. Those give the cost of what you
+just did rather than the account balance.
+
+The billing endpoint is a plain HTTP POST, so the request in the plugin's `fetchBalance()`
+([`lib/index.js`](../integrations/dsh/plugin-workbuddy-balance/lib/index.js)) can be
+reproduced from any HTTP client if you want the balance elsewhere.
+
 ## Requirements
 
 - VS Code **1.104+** (for `lm.registerLanguageModelChatProvider`)

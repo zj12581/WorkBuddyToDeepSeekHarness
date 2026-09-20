@@ -6,7 +6,7 @@
 const vscode = require('vscode');
 const { createClient, GatewayUnreachable } = require('./client');
 const { runTurn } = require('./agent');
-const { discoverGatewayApiKey } = require('./discover');
+const { discoverGatewayApiKey, candidateDirs } = require('./discover');
 const { isWsl, wslHostAddress, findGateway, WSL_LOCAL_PORT } = require('./discover-net');
 const { registerChatParticipant } = require('./chat');
 const { AgentViewProvider, VIEW_ID: AGENT_VIEW_ID } = require('./agentview');
@@ -265,9 +265,33 @@ class ChatViewProvider {
       const raw = String(err && err.message ? err.message : err);
       let hint = raw;
       if (/HTTP 401/.test(raw)) {
-        hint = 'the gateway rejected the API key (HTTP 401). Set workbuddyAgent.apiKey to the '
-          + 'value the gateway was started with, or start the gateway without --api-key. '
-          + 'Current value: ' + (cfg().get('apiKey') ? '(set, but wrong)' : '(empty)');
+        const configured = cfg().get('apiKey');
+        // The gateway never logs the key itself, so point at where the key is
+        // configured rather than at the log.
+        const searchPath = candidateDirs().slice(0, 4).map((d) => '  ' + d).join('\n');
+        const lines = [
+          'the gateway rejected the API key (HTTP 401).',
+          '',
+          'The extension reads the key from the gateway\'s own config, so normally',
+          'nothing has to be set by hand. It searched:',
+          searchPath,
+          '',
+        ];
+        if (configured) {
+          lines.push(
+            'workbuddyAgent.apiKey is set but does not match. Clear it to fall back to',
+            'discovery, or set it to the key the gateway was started with.'
+          );
+        } else {
+          lines.push(
+            'No key was found in the paths above, or the gateway was started with a',
+            'different one. The gateway does not log the key, so check how it starts:',
+            'its --api-key flag, or apiKey in the config.json above. Then either set',
+            'workbuddyAgent.apiKey to that value, or run scripts/setup.ps1 (Windows) /',
+            'scripts/setup.sh, which writes the key where this extension looks.'
+          );
+        }
+        hint = lines.join('\n');
       } else if (/HTTP 403/.test(raw)) {
         hint = 'the gateway refused the request (HTTP 403). Check workbuddyAgent.gatewayUrl points '
           + 'at your own gateway and not something else on that port.';

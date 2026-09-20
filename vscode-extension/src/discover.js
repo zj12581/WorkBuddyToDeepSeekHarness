@@ -20,17 +20,41 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-/** Directories that plausibly hold a gateway checkout. */
+/**
+ * Directories that plausibly hold a gateway config or checkout.
+ *
+ * The first entry matters most: the setup scripts this repository ships write
+ * their config to `~/.workbuddy-gateway/`, so an install done the documented way
+ * puts the key there and nowhere else. Leaving that path out is the difference
+ * between a working install and a 401 on first launch.
+ */
 function candidateDirs(extra) {
   const dirs = [];
   if (extra) dirs.push(extra);
   if (process.env.WORKBUDDY_GATEWAY_DIR) dirs.push(process.env.WORKBUDDY_GATEWAY_DIR);
+
   const home = os.homedir();
   dirs.push(
+    // What scripts/setup.{ps1,sh} write. Possibly also what `--config` points at.
+    path.join(home, '.workbuddy-gateway'),
+    // A manual clone, in the layouts people tend to use.
     path.join(home, 'workbuddy-gateway'),
     path.join(home, 'WorkBuddyToDeepSeekHarness'),
-    path.join(home, 'Documents', 'workbuddy-gateway')
+    path.join(home, 'Documents', 'workbuddy-gateway'),
+    path.join(home, 'Documents', 'WorkBuddyToDeepSeekHarness')
   );
+
+  // Under WSL the gateway usually runs on the Windows side, so its config lives
+  // on the Windows drive and is reachable through /mnt/c.
+  try {
+    const usersDir = '/mnt/c/Users';
+    for (const user of fs.readdirSync(usersDir)) {
+      if (/^(Public|Default|Default User|All Users)$/i.test(user)) continue;
+      dirs.push(path.join(usersDir, user, '.workbuddy-gateway'));
+      dirs.push(path.join(usersDir, user, 'workbuddy-gateway'));
+    }
+  } catch { /* not WSL, or /mnt/c unavailable */ }
+
   return dirs;
 }
 
@@ -69,9 +93,14 @@ function discoverGatewayApiKey(extraDir) {
 
       if (name === 'config.json') {
         try {
-          const j = JSON.parse(text);
-          if (j && typeof j.apiKey === 'string' && j.apiKey) {
-            return { key: j.apiKey, source: path.join(dir, name) };
+          // Strip a UTF-8 BOM first. PowerShell 5.1's `Set-Content -Encoding
+          // UTF8` and Notepad both write one, and JSON.parse rejects it — which
+          // would make discovery skip a perfectly good config and report the key
+          // as missing.
+          const body = text.charCodeAt(0) === 0xFEFF ? text.slice(1) : text;
+          const j = JSON.parse(body);
+          if (j && typeof j.apiKey === 'string' && j.apiKey.trim()) {
+            return { key: j.apiKey.trim(), source: path.join(dir, name) };
           }
         } catch { /* fall through to script parsing */ }
         continue;
