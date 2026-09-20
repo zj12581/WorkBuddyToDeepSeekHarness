@@ -56,9 +56,15 @@ It has:
 
 The same settings apply to both integration paths.
 
-## Pick a free model
+## Pick a cheap model
 
-Twelve of the 32 models cost nothing (`credit: 0` as measured 2026-09):
+Twelve of the 32 models are marked free (`★`) by the gateway. **That marking is a
+starting point, not a promise** — free/paid on this platform does not follow the price
+multiplier and shifts over time. A second measurement days later found `kimi-k2.7`,
+`kimi-k2.6`, `kimi-k2.5` and `minimax-m2.7` billing `0.01`–`0.02` per request while
+`deepseek-v4.1-flash` had become free.
+
+The models carrying `★` in the picker:
 
 ```
 auto  hy4-preview-f  hy3  glm-5.3-flash  glm-5.1  glm-5.0-turbo
@@ -66,10 +72,14 @@ kimi-k2.7  kimi-k2.6  kimi-k2.5  minimax-m2.7  deepseek-v4-flash  deepseek-v3.2
 ```
 
 > **`hy4-preview` vs `hy4-preview-f`** — one suffix apart. The official client's UI calls
-> both "Hy4 preview", but only `-f` is free; the other bills. Free models are marked `★`
-> in the picker.
+> both "Hy4 preview", but only `-f` is free; the other bills.
 
-Cheapest paid models start at `deepseek-v4.1-flash` (×0.03).
+To see what a request actually cost, the panel shows a per-session credit total and the
+gateway log (`--debug`) prints `credit=` for every call.
+
+**`hy4-preview-f` is the model most often rate-limited upstream** (`HTTP 429`, code
+`6004`, with a reset time in the message). If it errors, use `deepseek-v4-flash` — free
+and reliably available.
 
 ## Requirements
 

@@ -2,10 +2,10 @@
 
 **Expose a locally logged-in WorkBuddy / CodeBuddy account as an OpenAI-compatible API — one file, zero dependencies.**
 
-[中文说明](README.zh.md) · [DeepSeek Harness integration](docs/dsh.md) · [Troubleshooting](docs/troubleshooting.md)
+[中文说明](README.zh.md) · [DeepSeek Harness](docs/dsh.md) · [Other clients](docs/clients.md) · [Troubleshooting](docs/troubleshooting.md)
 
 ```
-any OpenAI-compatible client (DeepSeek Harness, Cherry Studio, LobeChat, ...)
+any OpenAI-compatible client (DeepSeek Harness, VS Code, Cherry Studio, LobeChat, ...)
         │  POST http://127.0.0.1:8790/v1/chat/completions
         ▼
   gateway.js  ── reads the desktop client's session, refreshes it, normalizes the stream
@@ -14,126 +14,329 @@ any OpenAI-compatible client (DeepSeek Harness, Cherry Studio, LobeChat, ...)
   WorkBuddy backend  (Hunyuan / GLM / Kimi / MiniMax / DeepSeek)
 ```
 
-## Why this one
+---
 
-There are already several proxy projects for the same subscription ([list in NOTICE](NOTICE)). This one is different in three ways:
+## Contents
 
-| | |
+- [Before you start](#before-you-start)
+- [Install in five steps](#install-in-five-steps)
+- [Verify it works](#verify-it-works)
+- [Connect a client](#connect-a-client)
+- [VS Code extension](#vs-code-extension)
+- [Running on WSL](#running-on-wsl)
+- [Endpoints](#endpoints)
+- [Why this gateway](#why-this-gateway)
+- [Model list and real cost](#model-list-and-real-cost)
+- [Configuration](#configuration)
+- [Background and autostart](#background-and-autostart)
+- [Troubleshooting](#troubleshooting)
+- [Layout](#layout)
+- [Security, legal and license](#security-legal-and-license)
+
+---
+
+## Before you start
+
+You need exactly two things.
+
+### 1. The desktop client, signed in
+
+This gateway does not have its own login. It reads the session the **WorkBuddy / CodeBuddy desktop application** already stored, and refreshes it the same way that client does.
+
+> **Install the desktop client, sign in, and confirm it can send a message.** If the desktop app is not signed in, nothing here will work — there is no token to borrow.
+
+The session lives in a platform-specific location. You do not need to find it by hand; the setup script does. For reference:
+
+| OS | Location |
 |---|---|
-| **Zero dependencies, no build** | `node gateway.js` and you are done. No Docker, no Go toolchain, no `pip install`. Node ≥ 18 only, using the built-in `fetch`. |
-| **Built against a real agent, not just curl** | Agent clients inject a compliance preamble ("refuse DoS / exploit / credential testing / C2 frameworks …"). The upstream content filter matches those words and rejects the whole request with `11128 Illegal API invocation from an unapproved channel`. This gateway desensitizes that preamble and retries — see [why](#the-problem-this-actually-solves). |
-| **A reproducible capability matrix** | `probes/` measures which model ids the account really serves and which of them emit a separate reasoning channel. Facts you can re-run, not documentation copied from a blog post. |
+| Windows | `%LOCALAPPDATA%\CodeBuddyExtension\Data\Public\auth\*.info` |
+| macOS | `~/Library/Application Support/CodeBuddyExtension/Data/Public/auth/*.info` |
+| Linux / WSL | `~/.local/share/CodeBuddyExtension/...`, or the Windows path under `/mnt/c` |
 
-## Quick start
+### 2. Node.js ≥ 18
 
-Requires: the WorkBuddy / CodeBuddy **desktop client, signed in** (that is where the session lives), and Node ≥ 18.
+```bash
+node --version      # must print v18.x or higher
+```
 
-### One command
+If it does not:
 
-The setup script finds your login, writes a config, starts the gateway and waits for a health check. It is idempotent — re-run it to repair, not to duplicate.
+- **Windows** — `winget install OpenJS.NodeJS.LTS`, then open a new terminal
+- **macOS** — `brew install node`
+- **Linux/WSL** — `sudo apt install nodejs npm` (check the version; distro packages are sometimes older than 18) or use [nvm](https://github.com/nvm-sh/nvm)
+
+There is nothing else to install. No Docker, no Go, no `pip`, no `npm install` — the gateway uses only Node's standard library.
+
+### 3. Do not expose the port
+
+The gateway binds `127.0.0.1` (loopback) by default. **Leave it that way.** Anyone who can reach the port can spend your account's quota. See [Security](#security-legal-and-license).
+
+---
+
+## Install in five steps
+
+### Step 1 — Clone
+
+```bash
+git clone https://github.com/zj12581/WorkBuddyToDeepSeekHarness.git
+cd WorkBuddyToDeepSeekHarness
+```
+
+### Step 2 — Run the setup script
+
+This one command finds your login, writes a config file, starts the gateway and waits until it is healthy. It is **idempotent** — running it again repairs the setup rather than creating a second copy.
 
 **Windows**
 
 ```powershell
-git clone https://github.com/zj12581/WorkBuddyToDeepSeekHarness.git
-cd WorkBuddyToDeepSeekHarness
 powershell -ExecutionPolicy Bypass -File scripts\setup.ps1
 ```
 
 **macOS / Linux / WSL**
 
 ```bash
-git clone https://github.com/zj12581/WorkBuddyToDeepSeekHarness.git
-cd WorkBuddyToDeepSeekHarness
 bash scripts/setup.sh
 ```
 
-Both wrap the same steps:
+<details>
+<summary>What the script actually does, step by step</summary>
 
-| Step | What happens |
-|---|---|
-| 1 | checks Node ≥ 18 and locates `gateway.js` |
-| 2 | finds the desktop client's login (auto-detects, or `WORKBUDDY_AUTH_FILE`) |
-| 3 | verifies the upstream is reachable |
-| 4 | writes `~/.workbuddy-gateway/config.json` — only when absent |
-| 5 | stops any previous instance |
-| 6 | starts the gateway detached and waits for `/health` |
-| 7 | optionally installs the VS Code extension, if `code` is on `PATH` |
+| # | Action | Fails when |
+|---|---|---|
+| 1 | Checks Node ≥ 18 and locates `gateway.js` | Node missing or too old |
+| 2 | Searches the platform's login locations for `*.info`, preferring a `workbuddy*` name | Desktop client never signed in |
+| 3 | Prints the account nickname, domain and token expiry (never the token) | — |
+| 4 | Confirms `copilot.tencent.com` is reachable | Warns only; setup continues |
+| 5 | Writes `~/.workbuddy-gateway/config.json` | Only when the file does not exist |
+| 6 | Stops any previously started instance | — |
+| 7 | Starts detached and polls `GET /health` for up to 20s | Gateway crashes — prints the log tail |
+| 8 | Installs the VS Code extension, if a `.vsix` and the `code` CLI are both present | Skipped silently otherwise |
 
-Skip the extension step with `-SkipExtension` (PowerShell) or `--skip-extension` (bash). Stop it later with `scripts/stop.ps1` / `scripts/stop.sh`.
+Useful flags:
+
+| Task | Windows | macOS / Linux |
+|---|---|---|
+| Skip the VS Code step | `-SkipExtension` | `--skip-extension` |
+| Use a different port | `-Port 8899` | `WORKBUDDY_GATEWAY_PORT=8899` |
+| Point at a specific login file | `-AuthFile PATH` or `$env:WORKBUDDY_AUTH_FILE` | `WORKBUDDY_AUTH_FILE=PATH` |
+</details>
+
+A successful run looks like this:
 
 ```
-==> Checking Node.js                     v node v24.18.0
-==> Locating the WorkBuddy / CodeBuddy login
-    login: C:\Users\you\AppData\Local\CodeBuddyExtension\Data\Public\auth\workbuddy-desktop.info
-    account: (nickname)  domain: www.workbuddy.cn  token valid to: 2026-10-20T15:09
-==> Checking the upstream is reachable    v upstream responded (HTTP 200)
-==> Writing configuration                 v wrote C:\Users\you\.workbuddy-gateway\config.json
+WorkBuddy gateway - setup
+
+==> Checking Node.js
+    v node v24.18.0
+    v gateway: /path/to/WorkBuddyToDeepSeekHarness/gateway.js
+==> Locating the WorkBuddy / CodeBuddy desktop login
+    v login: C:\Users\you\AppData\Local\CodeBuddyExtension\Data\Public\auth\workbuddy-desktop.info
+    account: (nickname)  domain: www.workbuddy.cn  token valid to: 2026-10-20 15:09
+==> Checking the upstream is reachable
+    v upstream responded (HTTP 200)
+==> Writing configuration
+    v wrote C:\Users\you\.workbuddy-gateway\config.json
+==> Stopping any previous instance
 ==> Starting the gateway on 127.0.0.1:8790
-==> Waiting for the health check          v healthy - 32 models (12 free)
+    v pid 18872
+==> Waiting for the health check
+    v healthy - 32 models (12 free)
 ```
 
-### Manual
+### Step 3 — Verify
 
 ```bash
-# 1. real end-to-end check: models, non-streaming, streaming, native tool calls
+curl -s http://127.0.0.1:8790/health -H "Authorization: Bearer workbuddy-local"
+```
+
+You want `"status":"ok"` and a `models` array. On Windows PowerShell:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8790/health -Headers @{Authorization='Bearer workbuddy-local'}
+```
+
+### Step 4 — Send a real message
+
+This is the step that proves the whole chain works — session, refresh, upstream, streaming:
+
+```bash
+curl -s http://127.0.0.1:8790/v1/chat/completions \
+  -H "Authorization: Bearer workbuddy-local" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"Reply with the single word: ok"}]}'
+```
+
+`deepseek-v4-flash` is a good smoke-test model: it is free, it does not spend its output budget on reasoning, and it answers promptly. Avoid using `hy4-preview-f` for the first test — it is free but is the model most often rate-limited by the upstream (`HTTP 429`, code `6004`), which makes a working setup look broken.
+
+For a fuller check (models, non-streaming, streaming, native tool calls):
+
+```bash
+node tests/smoke-test.js
+```
+
+### Step 5 — Stop and restart
+
+```bash
+bash scripts/stop.sh          # or: powershell -File scripts\stop.ps1
+bash scripts/setup.sh         # start again (reuses the existing config)
+```
+
+That is the whole install. Now point a client at it.
+
+---
+
+## Verify it works
+
+Three levels of testing, cheapest first.
+
+```bash
+# 1. Offline unit tests — no account, no network
+node --test tests/unit/core.test.js
+
+# 2. Live end-to-end against a running gateway
 node tests/smoke-test.js
 
-# 2. run it
-node gateway.js --port 8790 --api-key workbuddy-local
+# 3. Which model ids does *your* account actually serve?
+node probes/probe-models.js
+
+# 4. Which of them emit a separate reasoning channel?
+node probes/probe-thinking.js
 ```
 
-Then point any OpenAI-compatible client at:
+The `probes/` are not decoration: upstream model ids change without notice, and `probe-models.js` is how you find out that yours did. Run it when a model starts returning `11102 service info not found`.
 
-- **Base URL** `http://127.0.0.1:8790/v1`
-- **API key** whatever you passed to `--api-key` (or leave both empty for keyless local use)
-- **Model** one of the ids from `GET /v1/models`
+---
 
-Working examples: [DeepSeek Harness](docs/dsh.md) · [VS Code](vscode-extension/README.md).
+## Connect a client
 
-### Use it inside VS Code
+Any client that speaks the OpenAI chat protocol works. You need three values:
 
-The extension in [`vscode-extension/`](vscode-extension/) makes the models show up in VS Code's own Chat view, so GitHub Copilot Chat (or any chat participant) drives them with its own agent loop and tools — this gateway only supplies the model.
+| Setting | Value |
+|---|---|
+| Base URL | `http://127.0.0.1:8790/v1` |
+| API key | `workbuddy-local` (or whatever you passed to `--api-key`; can be left empty) |
+| Model | any id from `GET /v1/models` |
+
+- **DeepSeek Harness** — a full walkthrough, including model names that display the credit multiplier, is in [`docs/dsh.md`](docs/dsh.md).
+- **Cherry Studio, LobeChat, ChatBox, NextChat, OpenAI SDKs** — see [`docs/clients.md`](docs/clients.md).
+- **VS Code** — see the next section.
+
+Two things worth knowing before you pick a model:
+
+1. **Start with `deepseek-v4-flash`.** It measured `credit: 0` and does not burn its output budget on reasoning.
+2. **"Free" is not a fixed property — measure it on your own account.** Free/paid does not follow the multiplier and changes over time. See [What actually drives the bill](#what-actually-drives-the-bill), and read the `credit=` field in the gateway log (`--debug`) rather than trusting any table, including the one below.
+
+---
+
+## VS Code extension
+
+The extension in [`vscode-extension/`](vscode-extension/) integrates in two independent ways. Full details in [its README](vscode-extension/README.md).
+
+### Build and install
 
 ```bash
-cd vscode-extension && npx @vscode/vsce package     # produces workbuddy-agent-0.1.0.vsix
+cd vscode-extension
+npx @vscode/vsce package --no-dependencies
 code --install-extension workbuddy-agent-0.1.0.vsix
 ```
 
-Restart VS Code, then pick a **WorkBuddy** model in the Chat view's model picker.
+Then **fully restart VS Code** (not just a window reload — the language model provider registers during activation).
 
-### Running inside WSL
+### Path A — models in the Chat view (recommended)
 
-WSL (NAT mode) has its own `127.0.0.1`, so a gateway bound to Windows loopback is not reachable from it — and on Windows 10 neither mirrored networking (needs Windows 11) nor `netsh portproxy` (needs admin) is available. The supported answer is a second instance **inside** WSL that reads the Windows login through `/mnt/c`, leaving the Windows gateway untouched:
+The extension registers a `LanguageModelChatProvider`, so the WorkBuddy models appear in VS Code's **Chat view model picker**. GitHub Copilot Chat — or any other chat participant — then drives the conversation with *its own* agent loop, tools, approval prompts and diff UI.
+
+This is the better integration, because the agent quality is the host's, not a reimplementation.
+
+Open the Chat view → click the model dropdown → pick a **WorkBuddy** model (`★` marks free ones).
+
+### Path B — the standalone panel
+
+If you do not have Copilot Chat installed, the extension also ships its own agent in the **secondary side bar** (the right-hand column), plus a `@workbuddy` chat participant.
+
+Command palette → **WorkBuddy Agent: Open Agent Panel (right side)**.
+
+It provides streaming answers, collapsible tool steps, inline permission prompts (Allow once / Allow for session / Deny), a live status strip, session persistence, and model + reasoning-depth pickers.
+
+### Installing into WSL
+
+If VS Code is attached to WSL, installing from the Windows side is not enough — the WSL extension host has its own directory:
 
 ```bash
-bash wsl/start-gateway.sh     # listens on 127.0.0.1:8791 inside the VM
-bash wsl/stop-gateway.sh
+bash wsl/install-extension.sh          # from inside WSL
 ```
 
-The extension probes that port automatically.
+---
 
-### Verify without a client
+## Running on WSL
+
+**Read this if you use VS Code with the WSL remote, or run anything inside WSL.**
+
+### Why WSL needs its own gateway
+
+WSL in NAT mode has its own `127.0.0.1`, which is **not** the Windows loopback. A gateway bound to `127.0.0.1` on Windows is therefore unreachable from inside WSL.
+
+The two usual fixes are unavailable on many machines:
+
+| Fix | Requires |
+|---|---|
+| WSL mirrored networking (`networkingMode=mirrored`) | Windows 11 22H2+ — **not** Windows 10 |
+| `netsh interface portproxy` | Administrator rights, and the WSL IP changes across reboots |
+
+The supported answer is a **second gateway instance inside WSL** that reads the Windows login through `/mnt/c`. The Windows-side gateway keeps its loopback binding and is never touched:
 
 ```bash
-curl -s http://127.0.0.1:8790/v1/models -H "Authorization: Bearer workbuddy-local"
+bash wsl/start-gateway.sh     # starts on 127.0.0.1:8791 inside the VM
+bash wsl/stop-gateway.sh      # stops it
 
-curl -s http://127.0.0.1:8790/v1/chat/completions \
-  -H "Authorization: Bearer workbuddy-local" -H "Content-Type: application/json" \
-  -d '{"model":"hy4-preview-f","messages":[{"role":"user","content":"In one sentence, what is a CAN bus?"}]}'
+bash wsl/install-extension.sh # install the extension into the WSL extension host
 ```
+
+You end up with two side-by-side instances, which is intentional:
+
+```
+127.0.0.1:8790   Windows   ← used by Windows apps (DeepSeek Harness, Windows VS Code)
+127.0.0.1:8791   WSL       ← used by VS Code attached to WSL
+```
+
+The extension probes `8791` automatically, so no URL configuration is needed.
+
+### Requirements inside WSL
+
+- `node` ≥ 18 **inside WSL** (this is separate from the Windows Node install): `node --version`
+- The Windows login file readable through `/mnt/c` — `start-gateway.sh` finds it automatically
+- Outbound access from WSL to `copilot.tencent.com` (the script warns if it is blocked)
+
+### Notes
+
+- `start-gateway.sh` uses `setsid` to detach. Plain `nohup ... &` is **not** enough when the script is invoked through `wsl.exe -e bash -lc`: the process stays in the caller's session and is reaped when that session ends.
+- The WSL instance does not start automatically after `wsl --shutdown`. Run `start-gateway.sh` again. To automate it, add a line to `~/.bashrc` or a systemd user unit (WSL must have systemd enabled).
+
+---
 
 ## Endpoints
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` | `/v1/models` | the configured model list |
+| `GET` | `/v1/models` | the configured model list, each tagged `tier: "free"` or `"paid"` |
 | `POST` | `/v1/chat/completions` | streaming and non-streaming, native `tools` / `tool_calls` |
 | `GET` | `/health` | session state (identity fields redacted by default) |
 
-Also accepts `/models` and `/chat/completions` without the `/v1` prefix.
+`/models` and `/chat/completions` also work without the `/v1` prefix, for clients that omit it.
 
-## The problem this actually solves
+---
+
+## Why this gateway
+
+There are already several proxy projects for the same subscription ([list in NOTICE](NOTICE)). This one differs in three ways:
+
+| | |
+|---|---|
+| **Zero dependencies, no build** | `node gateway.js` and you are done. No Docker, no Go toolchain, no `pip install`. Node ≥ 18 only, using the built-in `fetch`. |
+| **Built against a real agent, not just curl** | Agent clients inject a compliance preamble ("refuse DoS / exploit / credential testing / C2 frameworks …"). The upstream content filter matches those words and rejects the entire request. This gateway desensitizes that preamble and retries. See below. |
+| **A reproducible capability matrix** | `probes/` measures which model ids the account really serves and which emit a separate reasoning channel — facts you can re-run, not documentation copied from a blog post. |
+
+### The problem it actually solves
 
 An agent client sends something like this as its system prompt:
 
@@ -146,11 +349,11 @@ The upstream filters on those literal words and answers:
  "displayMsg":{"zh":"请求被安全策略拦截，请稍后重试或联系支持。"}}
 ```
 
-The refusal statement is being read as the malicious request. This gateway:
+The refusal statement is being read as the malicious request. The gateway:
 
-1. **Desensitizes** `system` / `developer` messages: inserts a zero-width space inside each matched term (`DoS` → `D<U+200B>oS`). Invisible to humans and models, fatal to a literal keyword match. User input is never rewritten by this step.
+1. **Desensitizes** `system` / `developer` messages — inserts a zero-width space inside each matched term (`DoS` → `D<U+200B>oS`). Invisible to humans and models, fatal to a literal keyword match. User input is never rewritten by this step.
 2. **Retries once** with heavier desensitization (user/tool messages included) if the upstream still rejects it.
-3. **Normalizes `developer` → `system`**, because the upstream only accepts `system`/`user`/`assistant`/`tool` while newer OpenAI clients send `developer`.
+3. **Normalizes `developer` → `system`**, because the upstream accepts only `system`/`user`/`assistant`/`tool` while newer OpenAI clients send `developer`.
 
 Reproduce the failure and the fix:
 
@@ -162,11 +365,25 @@ node gateway.js                               # terminal 1: the fix
 node probes/probe-block.js                    # terminal 2: all five cases pass
 ```
 
-## Capability matrix
+Other protocol gaps this gateway closes:
 
-Observed on 2026-09 with a CN account. **This table is data, not documentation** — re-run `node probes/probe-models.js` and `node probes/probe-thinking.js` to refresh it. Upstream ids change without notice.
+| Client sends | Upstream wants | Why it matters |
+|---|---|---|
+| `max_completion_tokens` | `max_tokens` | Newer OpenAI clients send the alias; the upstream ignores it and silently falls back to its own small default cap, truncating answers. |
+| `tool_choice: {type:"function", function:{name}}` | `"name"` (a string) | The object form is rejected with `11101`. |
+| `reasoning_effort: "off"` | *(field omitted)* | The DeepSeek V4 family rejects the literal string `"off"` with `400 / 11150 invalid_reasoning_effort`. "Off" means "do not request reasoning", so the field is dropped. |
 
-The **multiplier** column is the upstream `/v3/config` `credits` field. It is a list price, not always what you actually pay: several models with a non-zero multiplier measured `credit=0`, and `hy4-preview-f` is free at any prompt size.
+---
+
+## Model list and real cost
+
+Observed 2026-09 with a CN account. **This table is data, not documentation** — re-run `node probes/probe-models.js` and `node probes/probe-thinking.js` to refresh it. Upstream ids change without notice.
+
+The **multiplier** is the upstream `/v3/config` `credits` field: a list price, not always what you pay. Several models with a non-zero multiplier measured `credit=0`, and `hy4-preview-f` is free at any prompt size.
+
+> **Read this before trusting any price here.** Two measurements on the same account, days apart, disagreed: a first pass showed twelve models at `credit: 0` including `kimi-k2.7` / `kimi-k2.6` / `kimi-k2.5` / `minimax-m2.7`, and a second pass of three runs each showed those four billing steadily at `0.01`–`0.02` while `deepseek-v4.1-flash` had become free. Free/paid is not a fixed property of a model id on this platform.
+>
+> Treat the table as a starting point and **verify with your own account** — run the gateway with `--debug` and read `credit=` per request. The numbers below are what one account saw in 2026-09, nothing more.
 
 | Model id | Mult. | Context | Out | Free | Reasoning | Vision |
 |---|---|---|---|---|---|---|
@@ -176,13 +393,13 @@ The **multiplier** column is the upstream `/v3/config` `credits` field. It is a 
 | `glm-5.3-flash` | x0.06 | 1M | 32K | ✅ | ✅ | ✅ |
 | `glm-5.1` | x0.79 | 200K | 48K | ✅ | ✅ | ✅ |
 | `glm-5.0-turbo` | x0.95 | 200K | 48K | ✅ | ✅ | ✅ |
-| `kimi-k2.7` | x0.57 | 256K | 32K | ✅ | ✅ | ✅ |
-| `kimi-k2.6` | x0.52 | 256K | 32K | ✅ | ✅ | ✅ |
-| `kimi-k2.5` | x0.45 | 256K | 32K | ✅ | ✅ | ✅ |
-| `minimax-m2.7` | x0.26 | 200K | 48K | ✅ | ✅ | ✅ |
 | `deepseek-v4-flash` | x0.17 | 1M | 50K | ✅ | ✅ | ✅ |
 | `deepseek-v3.2` | x0.29 | 96K | 32K | ✅ | ✅ | ✅ |
-| `deepseek-v4.1-flash` | **x0.03** | 1M | 128K | — | ✅ | ✅ |
+| `deepseek-v4.1-flash` | **x0.03** | 1M | 128K | ✅ (varies) | ✅ | ✅ |
+| `kimi-k2.7` | x0.57 | 256K | 32K | — (billed 0.02) | ✅ | ✅ |
+| `kimi-k2.6` | x0.52 | 256K | 32K | — (billed 0.01) | ✅ | ✅ |
+| `kimi-k2.5` | x0.45 | 256K | 32K | — (billed 0.01) | ✅ | ✅ |
+| `minimax-m2.7` | x0.26 | 200K | 48K | — (billed 0.01) | ✅ | ✅ |
 | `hy3-x` | x0.05 | 192K | 64K | — | ✅ | ✅ |
 | `fast-model` | x0.21 | 300K | 48K | — | ✅ | ✅ |
 | `minimax-m3` | x0.25 | 512K | 64K | — | ✅ | ✅ |
@@ -199,29 +416,35 @@ The **multiplier** column is the upstream `/v3/config` `credits` field. It is a 
 | `deep-model` | x1.20 | 300K | 48K | — | ✅ | ✅ |
 | `kimi-k3` | x1.62 | 256K | 32K | — | ✅ | ✅ |
 | `kimi-k3-1` | x1.62 | 1M | 32K | — | ✅ | ✅ |
-| `deepseek-r1-0528-lkeap` | — | 96K | 16K | — | — | ✅ |
+| `deepseek-r1-0528-lkeap` | — | 96K | 16K | — | — | — |
 | `deepseek-v3-0324` | — | 96K | 8K | — | — | — |
 | `hunyuan-2.0-instruct` | — | 128K | 16K | — | ✅ | ✅ |
 
-**"Free" means the upstream reports `credit: 0`,** verified by both the per-request `usage.credit` field and the balance endpoint. It does *not* mean "the multiplier is 0" — `glm-5.1` is listed at x0.79 yet bills nothing, and `deepseek-v3.2` is x0.29 but free.
+The **Free** column is what the gateway's `/v1/models` reports as `tier: "free"`, which is a built-in list and therefore has the same caveat as everything above.
 
-Ids that do **not** exist even though the catalog lists them (the upstream answers `11102 service info not found`): `minimax-m2.5`, `glm-4.6v`, `glm-4.6`, `kimi-k2-thinking`, `kimi-k2-instruct-taiji`, `deepseek-v3-1-volc`, `deepseek-v3-1`, `deepseek-r1-0528`, `deepseek-v3-0324-taco-completion`, `completion-gf`, `default-1.1`, `default-1.2`, `hunyuan-3b`, `hunyuan-7b-dense`, `codewise-completions`. `hunyuan-image-alpha*` answers `11103` (not a chat backend) and the `codewise-*` ids are completion models. All of them are excluded from the default list.
+> **`glm-5.3-flash` answered with empty content** during verification while reporting `credit: 0` and HTTP 200. Treat an empty answer from a reasoning-capable model as a token-budget problem before assuming the gateway is broken — raise `max_tokens`.
 
-### What actually drives the bill
+Ids that do **not** exist even though the catalog lists them (the upstream answers `11102 service info not found`): `minimax-m2.5`, `glm-4.6v`, `glm-4.6`, `kimi-k2-thinking`, `kimi-k2-instruct-taiji`, `deepseek-v3-1-volc`, `deepseek-v3-1`, `deepseek-r1-0528`, `deepseek-v3-0324-taco-completion`, `completion-gf`, `default-1.1`, `default-1.2`, `hunyuan-3b`, `hunyuan-7b-dense`, `codewise-completions`. `hunyuan-image-alpha*` answers `11103` (not a chat backend); the `codewise-*` ids are completion models. All are excluded from the default list.
 
-1. **The model id.** `hy4-preview-f` is free even on a 23k-token prompt; `hy4-preview` bills ~0.17 on the same prompt. They differ by one `-f`, and the official client's UI labels *both* as "Hy4 preview" — the client itself uses `hy4-preview-f`.
-2. **Prefix cache hits.** With a stable `prompt_cache_key`, a repeated prefix measured **0.68 → 0.04** on `deepseek-v4-flash`, and 22,656 of 22,735 prompt tokens were served from cache on a follow-up turn. On a long agent session this matters more than the multiplier.
+### The one suffix that costs money
 
-Two practical consequences:
+`hy4-preview` and `hy4-preview-f` differ by one character. The official client's UI calls **both** "Hy4 preview". The client itself uses `hy4-preview-f`, which measured free; the other billed roughly 0.17 credits on a 23k-token prompt.
 
-- A model with **no** reasoning channel must be declared non-reasoning in your client. Otherwise the client sends `reasoning_effort` that the model ignores, and any "thinking" the client displays is fabricated by the client, not the model.
-- A model **with** a reasoning channel spends its output budget on reasoning first. If `max_tokens` is too small the answer comes back empty with `finish_reason: "length"` — pass a generous budget for reasoning models. (The gateway translates `max_completion_tokens` to `max_tokens` for exactly this reason; the upstream ignores the alias and falls back to its own default cap.)
+That is the one pricing trap worth memorising, because the two ids are indistinguishable everywhere except the API.
 
-> The product documentation is stale on pricing: it advertises `deepseek-v4-flash` as x0.06, the catalog says x0.17, and the cheapest model actually available is `deepseek-v4.1-flash` at x0.03. Trust `/v3/config` and `usage.credit`, not the docs.
+### What else drives the bill
+
+**Prefix cache hits.** With a stable `prompt_cache_key`, a repeated prefix measured **0.68 → 0.04** on `deepseek-v4-flash`, and 22,656 of 22,735 prompt tokens were served from cache on a follow-up turn. On a long agent session this matters more than the multiplier. The gateway derives the key from the account uid plus a conversation anchor, so it stays stable within a session and does not collide across accounts.
+
+**Reasoning budgets.** A model *with* a reasoning channel spends its output budget on reasoning first. If `max_tokens` is too small the answer comes back empty with `finish_reason: "length"` — pass a generous budget for reasoning models.
+
+> The product documentation is stale on pricing: it advertises `deepseek-v4-flash` at x0.06, the catalog says x0.17, and the cheapest model actually available is `deepseek-v4.1-flash` at x0.03. Trust `/v3/config` and `usage.credit`, not the docs.
+
+---
 
 ## Configuration
 
-Priority: CLI flags / environment → config file → built-in defaults.
+Priority: **CLI flags / environment → config file → built-in defaults.**
 
 ```bash
 node gateway.js \
@@ -232,84 +455,118 @@ node gateway.js \
   --debug
 ```
 
-Start from [`config.example.json`](config.example.json). Environment equivalents: `WORKBUDDY_GATEWAY_PORT`, `WORKBUDDY_GATEWAY_API_KEY`, `WORKBUDDY_GATEWAY_HOST`, `WORKBUDDY_GATEWAY_CONFIG`, `WORKBUDDY_GATEWAY_LOG`, `WORKBUDDY_GATEWAY_DEBUG`, `WORKBUDDY_MODELS`, `WORKBUDDY_UPSTREAM`, `WORKBUDDY_AUTH_FILE`.
+Start from [`config.example.json`](config.example.json). The setup scripts write one for you at `~/.workbuddy-gateway/config.json`.
 
 | Flag | Effect |
 |---|---|
-| `--no-desensitize` | disable the system-prompt filter rewrite (useful to demonstrate the failure) |
+| `--port` / `--host` | listen address (default `127.0.0.1:8790`) |
+| `--api-key` | require this bearer token; empty accepts any local client |
+| `--auth-file` | pin the login file instead of auto-detecting |
+| `--config` | read settings from a JSON file |
+| `--log` | append the structured log to a file as well as stdout |
+| `--debug` | per-attempt detail, including `credit=` and `cache_hit=` |
+| `--model-list a,b,c` | replace the served model list |
+| `--detach` | re-launch detached and print the PID |
+| `--no-desensitize` | disable the system-prompt filter rewrite (to demonstrate the failure) |
 | `--no-retry` | disable the block-retry ladder |
 | `--expose-identity` | include `nickname` / `uid` in `GET /health` (off by default) |
-| `--model-list a,b,c` | replace the served model list |
 
-## How it works
+Environment equivalents: `WORKBUDDY_GATEWAY_PORT`, `WORKBUDDY_GATEWAY_API_KEY`, `WORKBUDDY_GATEWAY_HOST`, `WORKBUDDY_GATEWAY_CONFIG`, `WORKBUDDY_GATEWAY_LOG`, `WORKBUDDY_GATEWAY_DEBUG`, `WORKBUDDY_MODELS`, `WORKBUDDY_UPSTREAM`, `WORKBUDDY_AUTH_FILE`.
 
-- **Session discovery.** The desktop client stores its session in a platform-specific app data directory. The gateway looks in the known locations (Windows / macOS / Linux, several fallbacks) and prefers a `workbuddy*` file. Override with `authFile` / `WORKBUDDY_AUTH_FILE`.
-- **Token refresh.** Before each request the access token is checked; with under 60s left it is refreshed via the client's own refresh endpoint and written back atomically, exactly as the desktop client does. The desktop client and the gateway can therefore run side by side without invalidating each other.
-- **Always streaming upstream.** The upstream only supports `stream: true`. The gateway always requests a stream and aggregates locally when the client asked for a non-streaming response.
-- **Buffered before written.** A streaming answer is buffered until the upstream stream ends, so a mid-stream security rejection can be retried instead of emitting half an answer.
-- **Reasoning passthrough.** `delta.reasoning_content` is forwarded as `reasoning_content`, which clients that understand it (DeepSeek Harness, for one) render as a thinking channel.
+> A config file saved by PowerShell 5.1's `Set-Content -Encoding UTF8` or by Notepad begins with a UTF-8 BOM. The gateway strips it; other tools reading the same file may not.
 
-## Layout
+---
 
-```
-gateway.js              the server (config, HTTP routes, retry ladder)
-lib/core.js             pure logic: desensitization, request building, SSE parsing
-lib/credentials.js      session discovery, token refresh, upstream headers
-probes/probe-models.js  which model ids the account really serves
-probes/probe-thinking.js which models emit a reasoning channel
-probes/probe-reasoning.js how the upstream reacts to reasoning_effort
-probes/probe-limits.js  which max_tokens values are accepted (weak signal, see file header)
-probes/probe-block.js   reproduce the security-filter rejection and verify the fix
-tests/unit/             offline unit tests for lib/core.js
-tests/smoke-test.js     live end-to-end check against a running gateway
-docs/                   DeepSeek Harness integration, client setup, troubleshooting
-```
+## Background and autostart
 
-## Running it in the background
+The setup scripts already start the gateway detached, so nothing further is needed for normal use.
 
-`--detach` re-launches the gateway detached from the current shell and prints the PID:
+To run it by hand, detached:
 
 ```bash
 node gateway.js --port 8790 --api-key workbuddy-local --log ./logs/gateway.log --detach
 # [workbuddy-gateway] detached, pid 29396 (pid file: ./logs/gateway.pid)
 ```
 
-Stop it with the printed command (`taskkill /PID <pid> /T /F` on Windows, `kill <pid>` elsewhere).
+Stop it with `taskkill /PID <pid> /T /F` on Windows, `kill <pid>` elsewhere.
 
-To start it at login, use the platform's own mechanism rather than a wrapper script:
+To start it **at login**, use the platform's own mechanism rather than a wrapper script:
 
-- **Linux** — a `systemd --user` unit (`~/.config/systemd/user/workbuddy-gateway.service`) with
+- **Linux** — a `systemd --user` unit at `~/.config/systemd/user/workbuddy-gateway.service` with
   `ExecStart=/usr/bin/node /path/to/gateway.js --log %h/.workbuddy-gateway/gateway.log`, then
-  `systemctl --user enable --now workbuddy-gateway`.
-- **macOS** — a `launchd` agent in `~/Library/LaunchAgents/` running the same command.
-- **Windows** — Task Scheduler: create a task with trigger "At log on" and action
-  `node C:\path\to\gateway.js --log C:\path\to\logs\gateway.log`.
+  `systemctl --user enable --now workbuddy-gateway`
+- **macOS** — a `launchd` agent in `~/Library/LaunchAgents/` running the same command
+- **Windows** — Task Scheduler: trigger "At log on", action
+  `node C:\path\to\gateway.js --log C:\path\to\logs\gateway.log`
+- **WSL** — a line in `~/.bashrc` calling `wsl/start-gateway.sh`, or a systemd user unit
+  (requires systemd enabled in WSL)
 
-## Tests
+---
 
-```bash
-node --test tests/unit/core.test.js   # offline, no account needed
-node tests/smoke-test.js              # live, requires a running gateway
+## Troubleshooting
+
+The full list, with the exact error strings, is in [`docs/troubleshooting.md`](docs/troubleshooting.md). The most common ones:
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `no WorkBuddy/CodeBuddy auth file found` | Desktop client not signed in, or the session is somewhere unusual | Sign in, or set `WORKBUDDY_AUTH_FILE` / `authFile` |
+| `11128 Illegal API invocation from an unapproved channel` | The content filter matched the agent's own refusal preamble | Should be handled automatically; if not, check that `desensitize` is not disabled |
+| `11102 service info not found` | The model id no longer exists upstream | `node probes/probe-models.js` and update your model list |
+| Empty answer, `finish_reason: "length"` | `max_tokens` too small for a reasoning model | Raise the budget, or pick a non-reasoning model |
+| `401 invalid api key` | Client key ≠ gateway `--api-key` | Make them match |
+| `upstream unreachable: fetch failed` | No network, or a system proxy is intercepting `fetch` | Check the proxy settings in the environment the gateway runs in |
+| VS Code: no WorkBuddy group in the model picker | The provider registers during activation | Fully restart VS Code; check **Developer: Show Logs… → Extension Host** |
+| WSL: `no gateway answered` | A Windows-loopback gateway is unreachable from WSL | Run `bash wsl/start-gateway.sh` inside WSL |
+| Gateway works in curl, fails in an agent client | Tool calls answered in prose | The model may not support tools; check `supportsToolCall` for that id |
+
+If it stopped working after being fine, an upstream change is the usual cause — the fix normally lives in `lib/core.js` (request shape) or the model list (`probes/`).
+
+---
+
+## Layout
+
+```
+gateway.js                 the server (config, HTTP routes, retry ladder)
+lib/core.js                pure logic: desensitization, request building, SSE parsing
+lib/credentials.js         session discovery, token refresh, upstream headers
+scripts/setup.{ps1,sh}     one-command install
+scripts/stop.{ps1,sh}      stop the gateway
+wsl/start-gateway.sh       a second instance for use inside WSL (port 8791)
+wsl/stop-gateway.sh        stop it
+wsl/install-extension.sh   install the extension into the WSL extension host
+vscode-extension/          VS Code integration (model provider + standalone panel)
+probes/probe-models.js     which model ids the account really serves
+probes/probe-thinking.js   which models emit a reasoning channel
+probes/probe-reasoning.js  how the upstream reacts to reasoning_effort
+probes/probe-limits.js     which max_tokens values are accepted (weak signal, see file header)
+probes/probe-block.js      reproduce the security-filter rejection and verify the fix
+tests/unit/                offline unit tests for lib/core.js
+tests/smoke-test.js        live end-to-end check against a running gateway
+docs/                      DeepSeek Harness, other clients, troubleshooting
 ```
 
-## Security
+---
+
+## Security, legal and license
+
+### Security
 
 - Binds `127.0.0.1` by default. **Do not expose it to a network** — whoever can reach the port can spend your account's quota and read your session's output.
 - The auth file is equivalent to full control of the account. Keep it out of version control (`.gitignore` already covers `*.info`, `auths/`, `logs/`).
 - Logs can contain full prompts and answers. They stay local and are never sent anywhere by this project.
-- This project makes no outbound request other than to the configured upstream. There is no telemetry and no analytics.
+- The only outbound request this project makes is to the configured upstream. No telemetry, no analytics.
 
-## Legal and compliance boundary
+### Legal and compliance boundary
 
 This is **unofficial** software. It is not affiliated with, endorsed by, or supported by Tencent, CodeBuddy or WorkBuddy.
 
 - Use it **only with an account you personally own and are authorized to use**, on your own machine or in a private environment.
 - Reusing a desktop login session through a proxy may conflict with the upstream platform's terms of service. Account restrictions or bans are possible. **You accept that risk.**
-- Do not share, resell, redistribute or publicly host the resulting endpoint, and do not use it to circumvent the upstream's content policy for genuinely harmful input. The desensitization feature exists to stop *refusal statements* from being misread, not to smuggle disallowed requests through.
+- Do not share, resell, redistribute or publicly host the resulting endpoint, and do not use it to circumvent the upstream's content policy for genuinely harmful input. The desensitization feature exists so that *refusal statements* are not misread as requests, not to smuggle disallowed requests through.
 - The software is provided "as is", without warranty of any kind. The authors are not liable for account suspension, data loss, or any other consequence of use.
 
 Upstream protocols and model ids change without notice. If this stops working, the fix usually lives in `lib/core.js` (request shape) or `probes/` (model list).
 
-## License
+### License
 
 MIT — see [LICENSE](LICENSE). Third-party credits in [NOTICE](NOTICE).
