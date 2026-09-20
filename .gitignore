@@ -30,9 +30,10 @@ auth/
 Thumbs.db
 desktop.ini
 
-# Packaged extension binaries are build output, not source.
+# Packaged extension binaries. The released .vsix is committed on purpose so it
+# can be downloaded without a build step; everything else here is scratch output.
 *.vsix
-vscode-extension/*.vsix
+!vscode-extension/workbuddy-agent-*.vsix
 
 # Local scratch
 *.local.json

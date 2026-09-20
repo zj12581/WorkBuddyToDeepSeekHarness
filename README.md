@@ -65,11 +65,11 @@ If it does not:
 - **macOS** — `brew install node`
 - **Linux/WSL** — `sudo apt install nodejs npm` (check the version; distro packages are sometimes older than 18) or use [nvm](https://github.com/nvm-sh/nvm)
 
-There is nothing else to install. No Docker, no Go, no `pip`, no `npm install` — the gateway uses only Node's standard library.
+Nothing else is needed. No Docker, no Go, no `pip`, no `npm install`: the gateway uses only Node's standard library.
 
-### 3. Do not expose the port
+### 3. Keep the port on loopback
 
-The gateway binds `127.0.0.1` (loopback) by default. **Leave it that way.** Anyone who can reach the port can spend your account's quota. See [Security](#security-legal-and-license).
+The gateway binds `127.0.0.1` by default. Anyone who can reach the port can spend your account's quota, so do not bind it to a routable address. See [Security](#security-legal-and-license).
 
 ---
 
@@ -157,7 +157,7 @@ Invoke-RestMethod http://127.0.0.1:8790/health -Headers @{Authorization='Bearer 
 
 ### Step 4 — Send a real message
 
-This is the step that proves the whole chain works — session, refresh, upstream, streaming:
+This exercises the whole chain: session file, token refresh, upstream, streaming.
 
 ```bash
 curl -s http://127.0.0.1:8790/v1/chat/completions \
@@ -181,7 +181,7 @@ bash scripts/stop.sh          # or: powershell -File scripts\stop.ps1
 bash scripts/setup.sh         # start again (reuses the existing config)
 ```
 
-That is the whole install. Now point a client at it.
+The install is done; continue with a client below.
 
 ---
 
@@ -217,14 +217,14 @@ Any client that speaks the OpenAI chat protocol works. You need three values:
 | API key | `workbuddy-local` (or whatever you passed to `--api-key`; can be left empty) |
 | Model | any id from `GET /v1/models` |
 
-- **DeepSeek Harness** — a full walkthrough, including model names that display the credit multiplier, is in [`docs/dsh.md`](docs/dsh.md).
+- **DeepSeek Harness** — a full walkthrough, including model names that display the credit multiplier, is in [`docs/dsh.md`](docs/dsh.md). There is also a `/balance` plugin that reports the account's remaining credits: [`integrations/dsh/`](integrations/dsh/README.md).
 - **Cherry Studio, LobeChat, ChatBox, NextChat, OpenAI SDKs** — see [`docs/clients.md`](docs/clients.md).
 - **VS Code** — see the next section.
 
-Two things worth knowing before you pick a model:
+Before choosing a model:
 
-1. **Start with `deepseek-v4-flash`.** It measured `credit: 0` and does not burn its output budget on reasoning.
-2. **"Free" is not a fixed property — measure it on your own account.** Free/paid does not follow the multiplier and changes over time. See [What actually drives the bill](#what-actually-drives-the-bill), and read the `credit=` field in the gateway log (`--debug`) rather than trusting any table, including the one below.
+1. **Start with `deepseek-v4-flash`.** It measured `credit: 0` and does not spend its output budget on reasoning.
+2. **Measure "free" on your own account.** Free/paid does not follow the multiplier and changes over time. See [What actually drives the bill](#what-actually-drives-the-bill); read `credit=` from the gateway log (`--debug`) instead of trusting any table, including the one below.
 
 ---
 
@@ -240,15 +240,13 @@ npx @vscode/vsce package --no-dependencies
 code --install-extension workbuddy-agent-0.1.0.vsix
 ```
 
-Then **fully restart VS Code** (not just a window reload — the language model provider registers during activation).
+Then **fully restart VS Code**. A window reload is not enough, because the language model provider registers during activation.
 
 ### Path A — models in the Chat view (recommended)
 
-The extension registers a `LanguageModelChatProvider`, so the WorkBuddy models appear in VS Code's **Chat view model picker**. GitHub Copilot Chat — or any other chat participant — then drives the conversation with *its own* agent loop, tools, approval prompts and diff UI.
+The extension registers a `LanguageModelChatProvider`, so WorkBuddy models appear in VS Code's Chat view model picker. GitHub Copilot Chat, or any other chat participant, then drives the conversation with its own agent loop, tools, approval prompts and diff UI. The agent quality comes from the host instead of being reimplemented here.
 
-This is the better integration, because the agent quality is the host's, not a reimplementation.
-
-Open the Chat view → click the model dropdown → pick a **WorkBuddy** model (`★` marks free ones).
+Open the Chat view, click the model dropdown, and pick a **WorkBuddy** model (`★` marks free ones).
 
 ### Path B — the standalone panel
 
@@ -377,13 +375,13 @@ Other protocol gaps this gateway closes:
 
 ## Model list and real cost
 
-Observed 2026-09 with a CN account. **This table is data, not documentation** — re-run `node probes/probe-models.js` and `node probes/probe-thinking.js` to refresh it. Upstream ids change without notice.
+Observed 2026-09 with a CN account. Re-run `node probes/probe-models.js` and `node probes/probe-thinking.js` to refresh it; upstream ids change without notice.
 
 The **multiplier** is the upstream `/v3/config` `credits` field: a list price, not always what you pay. Several models with a non-zero multiplier measured `credit=0`, and `hy4-preview-f` is free at any prompt size.
 
-> **Read this before trusting any price here.** Two measurements on the same account, days apart, disagreed: a first pass showed twelve models at `credit: 0` including `kimi-k2.7` / `kimi-k2.6` / `kimi-k2.5` / `minimax-m2.7`, and a second pass of three runs each showed those four billing steadily at `0.01`–`0.02` while `deepseek-v4.1-flash` had become free. Free/paid is not a fixed property of a model id on this platform.
+> Two measurements on the same account, days apart, disagreed. A first pass showed twelve models at `credit: 0`, including `kimi-k2.7` / `kimi-k2.6` / `kimi-k2.5` / `minimax-m2.7`. A second pass of three runs each showed those four billing steadily at `0.01`–`0.02`, while `deepseek-v4.1-flash` had become free. Free/paid is not a fixed property of a model id on this platform.
 >
-> Treat the table as a starting point and **verify with your own account** — run the gateway with `--debug` and read `credit=` per request. The numbers below are what one account saw in 2026-09, nothing more.
+> Use the table as a starting point and verify against your own account: run the gateway with `--debug` and read `credit=` per request. The figures below are what one account saw in 2026-09.
 
 | Model id | Mult. | Context | Out | Free | Reasoning | Vision |
 |---|---|---|---|---|---|---|
@@ -428,13 +426,11 @@ Ids that do **not** exist even though the catalog lists them (the upstream answe
 
 ### The one suffix that costs money
 
-`hy4-preview` and `hy4-preview-f` differ by one character. The official client's UI calls **both** "Hy4 preview". The client itself uses `hy4-preview-f`, which measured free; the other billed roughly 0.17 credits on a 23k-token prompt.
-
-That is the one pricing trap worth memorising, because the two ids are indistinguishable everywhere except the API.
+`hy4-preview` and `hy4-preview-f` differ by one character. The official client's UI calls both "Hy4 preview". The client itself uses `hy4-preview-f`, which measured free; the other billed roughly 0.17 credits on a 23k-token prompt. Outside the API the two ids are indistinguishable, so check the id rather than the label.
 
 ### What else drives the bill
 
-**Prefix cache hits.** With a stable `prompt_cache_key`, a repeated prefix measured **0.68 → 0.04** on `deepseek-v4-flash`, and 22,656 of 22,735 prompt tokens were served from cache on a follow-up turn. On a long agent session this matters more than the multiplier. The gateway derives the key from the account uid plus a conversation anchor, so it stays stable within a session and does not collide across accounts.
+**Prefix cache hits.** With a stable `prompt_cache_key`, a repeated prefix measured **0.68 → 0.04** on `deepseek-v4-flash`, and 22,656 of 22,735 prompt tokens came from cache on a follow-up turn. On a long agent session this outweighs the multiplier. The gateway derives the key from the account uid plus a conversation anchor, so it stays stable within a session and does not collide across accounts.
 
 **Reasoning budgets.** A model *with* a reasoning channel spends its output budget on reasoning first. If `max_tokens` is too small the answer comes back empty with `finish_reason: "length"` — pass a generous budget for reasoning models.
 
