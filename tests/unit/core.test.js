@@ -484,3 +484,55 @@ test('buildUpstreamBody: applies the max_tokens and tool_choice fixes end to end
   assert.strictEqual(body.tool_choice, 'get_weather', 'the upstream only accepts a string here');
   assert.ok(body.prompt_cache_key, 'a cache key must be present');
 });
+
+// ---------------------------------------------------------------------------
+// reasoning_effort — "off" must be omitted, not forwarded
+// ---------------------------------------------------------------------------
+
+test('normalizeReasoningEffort: "off" and its synonyms are removed from the body', () => {
+  // The DeepSeek V4 family answers 400 / 11150 invalid_reasoning_effort when the
+  // literal string "off" reaches it, so the field has to go.
+  for (const value of ['off', 'OFF', '  off  ', 'none', 'disabled', 'disable', 'false', 'no']) {
+    const body = { model: 'deepseek-v4-flash', reasoning_effort: value };
+    core.normalizeReasoningEffort(body);
+    assert.strictEqual(body.reasoning_effort, undefined, JSON.stringify(value) + ' must be dropped');
+  }
+});
+
+test('normalizeReasoningEffort: false and null are removed too', () => {
+  for (const value of [false, null]) {
+    const body = { reasoning_effort: value };
+    core.normalizeReasoningEffort(body);
+    assert.strictEqual(body.reasoning_effort, undefined);
+  }
+});
+
+test('normalizeReasoningEffort: real levels pass through untouched', () => {
+  for (const value of ['minimal', 'low', 'medium', 'high', 'xhigh', 'max']) {
+    const body = { reasoning_effort: value };
+    core.normalizeReasoningEffort(body);
+    assert.strictEqual(body.reasoning_effort, value, value + ' must be forwarded');
+  }
+});
+
+test('normalizeReasoningEffort: an absent field stays absent', () => {
+  const body = { model: 'x' };
+  core.normalizeReasoningEffort(body);
+  assert.deepStrictEqual(Object.keys(body), ['model']);
+});
+
+test('buildUpstreamBody: reasoning_effort "off" never reaches the wire', () => {
+  const off = core.buildUpstreamBody({
+    model: 'deepseek-v4-flash',
+    messages: [{ role: 'user', content: 'hi' }],
+    reasoning_effort: 'off',
+  }, false, { desensitize: true });
+  assert.strictEqual(off.reasoning_effort, undefined, '"off" must not be forwarded');
+
+  const high = core.buildUpstreamBody({
+    model: 'deepseek-v4-flash',
+    messages: [{ role: 'user', content: 'hi' }],
+    reasoning_effort: 'high',
+  }, false, { desensitize: true });
+  assert.strictEqual(high.reasoning_effort, 'high', 'a real level must be forwarded');
+});

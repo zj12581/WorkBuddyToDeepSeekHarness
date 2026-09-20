@@ -61,10 +61,20 @@ function parseArgs(argv) {
 
 const args = parseArgs(process.argv);
 
+/**
+ * Read a JSON config file, tolerating a UTF-8 BOM.
+ *
+ * Windows tooling adds one readily: PowerShell 5.1's `Set-Content -Encoding UTF8`
+ * writes a BOM, and so does Notepad when a user edits the file by hand.
+ * JSON.parse rejects the leading U+FEFF outright, which turns an otherwise valid
+ * config into a hard startup failure.
+ */
 function readConfigFile(file) {
   if (!file) return {};
   try {
-    return JSON.parse(fs.readFileSync(file, 'utf8'));
+    let text = fs.readFileSync(file, 'utf8');
+    if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+    return JSON.parse(text);
   } catch (e) {
     if (e.code === 'ENOENT') return {};
     throw new Error('cannot read config file ' + file + ': ' + e.message);

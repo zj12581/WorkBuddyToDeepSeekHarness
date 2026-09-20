@@ -29,3 +29,11 @@ auth/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Packaged extension binaries are build output, not source.
+*.vsix
+vscode-extension/*.vsix
+
+# Local scratch
+*.local.json
+.workbuddy-gateway/
