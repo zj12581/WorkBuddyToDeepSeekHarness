@@ -6,20 +6,51 @@
   "publisher": "local",
   "license": "MIT",
   "engines": {
-    "vscode": "^1.74.0"
+    "vscode": "^1.104.0"
   },
   "categories": [
-    "Other"
+    "Other",
+    "AI",
+    "Chat"
   ],
   "activationEvents": [
-    "onStartupFinished"
+    "onStartupFinished",
+    "onChatParticipant:workbuddyAgent.chat"
   ],
   "main": "./src/extension.js",
   "contributes": {
+    "languageModelChatProviders": [
+      {
+        "vendor": "workbuddy",
+        "displayName": "WorkBuddy"
+      }
+    ],
+    "chatParticipants": [
+      {
+        "id": "workbuddyAgent.chat",
+        "name": "workbuddy",
+        "fullName": "WorkBuddy Agent",
+        "description": "Ask your WorkBuddy account, with workspace tools",
+        "isSticky": true,
+        "commands": [
+          {
+            "name": "model",
+            "description": "Show or set the model (e.g. /model hy4-preview-f)"
+          }
+        ]
+      }
+    ],
     "viewsContainers": {
       "activitybar": [
         {
           "id": "workbuddy-agent",
+          "title": "WorkBuddy Agent",
+          "icon": "$(hubot)"
+        }
+      ],
+      "secondarySidebar": [
+        {
+          "id": "workbuddy-agent-secondary",
           "title": "WorkBuddy Agent",
           "icon": "$(hubot)"
         }
@@ -32,12 +63,23 @@
           "id": "workbuddyAgent.chatView",
           "name": "Chat"
         }
+      ],
+      "workbuddy-agent-secondary": [
+        {
+          "type": "webview",
+          "id": "workbuddyAgent.agentView",
+          "name": "Agent"
+        }
       ]
     },
     "commands": [
       {
         "command": "workbuddyAgent.open",
         "title": "WorkBuddy Agent: Open Chat"
+      },
+      {
+        "command": "workbuddyAgent.openAgent",
+        "title": "WorkBuddy Agent: Open Agent Panel (right side)"
       },
       {
         "command": "workbuddyAgent.newChat",
@@ -54,6 +96,10 @@
       {
         "command": "workbuddyAgent.refreshModels",
         "title": "WorkBuddy Agent: Refresh Model List"
+      },
+      {
+        "command": "workbuddyAgent.diagnose",
+        "title": "WorkBuddy Agent: Diagnose Connection"
       },
       {
         "command": "workbuddyAgent.explainSelection",
@@ -79,10 +125,32 @@
           "default": "hy4-preview-f",
           "description": "Default model id. hy4-preview-f is free; hy4-preview bills credits."
         },
+        "workbuddyAgent.reasoningEffort": {
+          "type": "string",
+          "default": "off",
+          "enum": [
+            "off",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh"
+          ],
+          "enumDescriptions": [
+            "No reasoning: the field is not sent, so the model uses its default.",
+            "Lightest reasoning",
+            "Low reasoning",
+            "Balanced reasoning",
+            "Deep reasoning",
+            "Deepest reasoning"
+          ],
+          "description": "Reasoning depth for models that have a thinking channel. Models without one ignore it."
+        },
         "workbuddyAgent.maxToolSteps": {
           "type": "number",
-          "default": 12,
-          "description": "Maximum number of tool calls issued per turn."
+          "default": 50,
+          "minimum": 1,
+          "description": "Maximum tool calls per turn before the run stops. An exploratory task (search, read several files, edit, verify) commonly needs 20-40 steps; raise it for large refactors."
         },
         "workbuddyAgent.autoApproveFileWrites": {
           "type": "boolean",
@@ -102,5 +170,9 @@
   },
   "scripts": {
     "vscode:prepublish": "echo no-build-step"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zj12581/WorkBuddyToDeepSeekHarness.git"
   }
 }

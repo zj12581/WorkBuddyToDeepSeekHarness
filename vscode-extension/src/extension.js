@@ -6,10 +6,35 @@
 const vscode = require('vscode');
 const { createClient, GatewayUnreachable } = require('./client');
 const { runTurn } = require('./agent');
+const { discoverGatewayApiKey } = require('./discover');
+const { isWsl, wslHostAddress, findGateway, WSL_LOCAL_PORT } = require('./discover-net');
+const { registerChatParticipant } = require('./chat');
+const { AgentViewProvider, VIEW_ID: AGENT_VIEW_ID } = require('./agentview');
+const { registerLanguageModelProvider } = require('./lmprovider');
 
 function cfg() {
   return vscode.workspace.getConfiguration('workbuddyAgent');
 }
+
+/**
+ * The gateway is started by the user, so its key is not something the extension
+ * can know up front. An explicit setting always wins; otherwise we look for the
+ * key the local gateway was started with, so a fresh install connects without
+ * the user copying anything.
+ */
+function resolveApiKey() {
+  const configured = String(cfg().get('apiKey', '') || '').trim();
+  if (configured) return configured;
+
+  const found = discoverGatewayApiKey();
+  if (found) {
+    lastDiscoveredKey = found;
+    return found.key;
+  }
+  return '';
+}
+
+let lastDiscoveredKey = null;
 
 function currentModelMeta(provider) {
   const id = cfg().get('model', 'hy4-preview-f');
@@ -19,11 +44,56 @@ function currentModelMeta(provider) {
 function activate(context) {
   const provider = new ChatViewProvider(context);
 
+  // Make the WorkBuddy models selectable in the Chat view's model picker, so
+  // Copilot Chat drives them with its own agent loop and tool handling. This is
+  // the primary integration; the panel below is a fallback for setups without
+  // Copilot Chat installed.
+  const lmProvider = registerLanguageModelProvider(context);
+  if (lmProvider) {
+    context.subscriptions.push(
+      vscode.workspace.onDidChangeConfiguration((e) => {
+        if (e.affectsConfiguration('workbuddyAgent.gatewayUrl')
+          || e.affectsConfiguration('workbuddyAgent.apiKey')) {
+          lmProvider.refresh();
+          provider.refreshModels();
+        }
+      })
+    );
+  }
+
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider('workbuddyAgent.chatView', provider, {
       webviewOptions: { retainContextWhenHidden: true },
     })
   );
+
+  // The right-hand agent panel (secondary side bar), modelled on Copilot Chat.
+  const agent = new AgentViewProvider(context);
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(AGENT_VIEW_ID, agent, {
+      webviewOptions: { retainContextWhenHidden: true },
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('workbuddyAgent.openAgent', async () => {
+      // Reveal the container in the secondary side bar, then focus the view.
+      try {
+        await vscode.commands.executeCommand('workbench.action.focusAuxiliaryBar');
+      } catch { /* older builds */ }
+      try {
+        await vscode.commands.executeCommand(AGENT_VIEW_ID + '.focus');
+      } catch { /* ignore */ }
+    })
+  );
+
+  // The Chat-view participant shares the sidebar's agent loop and gateway
+  // resolution, so both surfaces behave identically.
+  registerChatParticipant(context, {
+    runTurn,
+    resolveApiKey,
+    getGatewayUrl: () => provider.resolvedUrl || cfg().get('gatewayUrl', 'http://127.0.0.1:8790'),
+  });
 
   context.subscriptions.push(
     vscode.commands.registerCommand('workbuddyAgent.open', () => {
@@ -67,6 +137,31 @@ function activate(context) {
   );
 
   context.subscriptions.push(
+    vscode.commands.registerCommand('workbuddyAgent.diagnose', async () => {
+      const configured = String(cfg().get('gatewayUrl', '') || '');
+      const port = (() => { try { return Number(new URL(configured).port) || 8790; } catch { return 8790; } })();
+      const lines = [];
+      lines.push('platform      : ' + process.platform + (isWsl() ? ' (WSL)' : ''));
+      lines.push('extension host: ' + (isWsl() ? 'inside WSL' : 'native'));
+      lines.push('configured URL: ' + (configured || '(empty)'));
+      if (isWsl()) lines.push('windows host  : ' + (wslHostAddress() || '(not detected)'));
+      lines.push('api key       : ' + (cfg().get('apiKey') ? '(from setting)' : (resolveApiKey() ? '(auto-discovered)' : '(none)')));
+      lines.push('');
+      lines.push('probing candidates:');
+      const found = await findGateway(configured, port, 2000);
+      for (const url of found.probed || []) {
+        lines.push('  ' + (url === found.url ? '✓ ' : '✗ ') + url);
+      }
+      lines.push('');
+      lines.push(found.url
+        ? 'RESULT: reachable at ' + found.url + (found.status === 401 ? ' (HTTP 401 — wrong api key)' : '')
+        : 'RESULT: ' + provider.unreachableHint());
+      const doc = await vscode.workspace.openTextDocument({ content: lines.join('\n'), language: 'text' });
+      await vscode.window.showTextDocument(doc, { preview: false });
+    })
+  );
+
+  context.subscriptions.push(
     vscode.commands.registerCommand('workbuddyAgent.explainSelection', async () => {
       const editor = vscode.window.activeTextEditor;
       if (!editor) return;
@@ -98,13 +193,54 @@ class ChatViewProvider {
     this.pushStatus('New chat. Model: ' + cfg().get('model'));
   }
 
+  /**
+   * Explain an unreachable gateway in terms of where this extension host runs.
+   * The WSL case is the confusing one: the gateway is healthy on Windows, but
+   * WSL cannot reach it because it is bound to Windows loopback only.
+   */
+  unreachableHint() {
+    const tried = (this.probeLog || []).join(', ') || String(cfg().get('gatewayUrl'));
+    if (isWsl()) {
+      // The Windows-side gateway stays bound to its loopback; we do not ask the
+      // user to rebind it. Instead run an instance inside WSL that reads the
+      // Windows auth file.
+      return 'no gateway answered from inside WSL. Tried: ' + tried + '.\n\n'
+        + 'A gateway bound to 127.0.0.1 on Windows cannot be reached from WSL, and this\n'
+        + 'machine cannot use mirrored networking (needs Windows 11) or portproxy (needs\n'
+        + 'admin). Run a gateway inside WSL instead — it reads the Windows login through\n'
+        + '/mnt/c, so the Windows gateway is left untouched:\n\n'
+        + '  bash /mnt/d/Project/WorkBuddyToDeepSeekHarness/wsl/start-gateway.sh\n\n'
+        + 'That listens on http://127.0.0.1:' + WSL_LOCAL_PORT + ' inside this VM, which this\n'
+        + 'extension probes automatically. Check it with:\n\n'
+        + '  curl -s http://127.0.0.1:' + WSL_LOCAL_PORT + '/health';
+    }
+    return 'no gateway answered at ' + tried + '. Start one with:\n'
+      + '  node gateway.js --port 8790 --api-key workbuddy-local';
+  }
+
   refreshModels() {
     if (!this.view) return;
     this.loadModels();
   }
 
   async loadModels() {
-    const client = createClient({ gatewayUrl: cfg().get('gatewayUrl'), apiKey: cfg().get('apiKey') });
+    // The gateway listens on loopback of whichever machine runs it, so the
+    // reachable URL depends on where this extension host runs (Windows vs WSL).
+    // Probe the candidates once and remember the winner.
+    if (!this.resolvedUrl) {
+      const configured = String(cfg().get('gatewayUrl', '') || '');
+      const port = (() => { try { return Number(new URL(configured).port) || 8790; } catch { return 8790; } })();
+      try {
+        const found = await findGateway(configured, port, 1500);
+        if (found.url) this.resolvedUrl = found.url;
+        this.probeLog = found.probed || [];
+      } catch { /* fall through to a normal attempt */ }
+    }
+
+    const client = createClient({
+      gatewayUrl: this.resolvedUrl || cfg().get('gatewayUrl'),
+      apiKey: resolveApiKey(),
+    });
     try {
       const models = await client.listModels();
       // Build a lookup of tier/context from the gateway response.
@@ -121,11 +257,23 @@ class ChatViewProvider {
         })),
         current: cfg().get('model', 'hy4-preview-f'),
       });
-      this.pushStatus('Connected. ' + models.length + ' models available.');
+      const via = this.resolvedUrl && this.resolvedUrl !== String(cfg().get('gatewayUrl') || '')
+        ? ' (via ' + this.resolvedUrl + ')'
+        : '';
+      this.pushStatus('Connected. ' + models.length + ' models available.' + via);
     } catch (err) {
-      const hint = err instanceof GatewayUnreachable
-        ? String(err.message)
-        : String(err && err.message ? err.message : err);
+      const raw = String(err && err.message ? err.message : err);
+      let hint = raw;
+      if (/HTTP 401/.test(raw)) {
+        hint = 'the gateway rejected the API key (HTTP 401). Set workbuddyAgent.apiKey to the '
+          + 'value the gateway was started with, or start the gateway without --api-key. '
+          + 'Current value: ' + (cfg().get('apiKey') ? '(set, but wrong)' : '(empty)');
+      } else if (/HTTP 403/.test(raw)) {
+        hint = 'the gateway refused the request (HTTP 403). Check workbuddyAgent.gatewayUrl points '
+          + 'at your own gateway and not something else on that port.';
+      } else if (err instanceof GatewayUnreachable) {
+        hint = this.unreachableHint();
+      }
       this.post({ type: 'models', models: [], current: null });
       this.pushStatus('Gateway unavailable: ' + hint, true);
     }
@@ -190,8 +338,8 @@ class ChatViewProvider {
 
     try {
       const { usage } = await runTurn({
-        gatewayUrl: cfg().get('gatewayUrl'),
-        apiKey: cfg().get('apiKey'),
+        gatewayUrl: this.resolvedUrl || cfg().get('gatewayUrl'),
+        apiKey: resolveApiKey(),
         model,
         messages: this.messages,
         maxSteps: cfg().get('maxToolSteps', 12),

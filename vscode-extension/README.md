@@ -1,99 +1,121 @@
 # WorkBuddy Agent for VS Code
 
 Use your locally signed-in WorkBuddy / CodeBuddy account inside VS Code, through the
-[workbuddy-gateway](../README.md) — the same local gateway this repository ships.
+local [workbuddy-gateway](../README.md).
 
-```
-VS Code sidebar (webview)
-        │  POST http://127.0.0.1:8790/v1/chat/completions
-        ▼
-  workbuddy-gateway  ── session, token refresh, prompt cache key, desensitization
-        │
-        ▼
-  WorkBuddy upstream   (Hunyuan / GLM / Kimi / MiniMax / DeepSeek)
-```
+There are two ways it integrates, and they are independent — use either or both.
 
-## What it does
+## 1. Models in the Chat view (recommended)
 
-- **Chat in the sidebar** with streaming, and rendering of the model's reasoning channel
-  when the model has one.
-- **Model picker** showing every model the gateway serves, with free models marked `★`.
-- **Agent tools** operating on your workspace:
-  - `read_file` — read a file
-  - `write_file` — create/overwrite (**asks first**)
-  - `list_dir` — list a directory
-  - `run_terminal` — run a command (**asks first**, 60s timeout)
-  - `insert_at_cursor` — insert text at the cursor
-- **Credit visibility** — after each turn the panel reports tokens, `credit` and
-  `prompt_cache_hit_tokens`, so you can see what a turn actually cost.
-- **Explain selection** — select code, run `WorkBuddy Agent: Explain Selection`.
+The extension registers a **language model provider**, so the WorkBuddy models appear
+in VS Code's own Chat view model picker. GitHub Copilot Chat — or any other chat
+participant — then drives the conversation with *its* agent loop, tools, approval
+prompts and diff UI. The extension only supplies the model.
 
-## Prerequisites
+**Why this is the good path:** agent quality is the host's, not ours. You get
+Copilot's tool orchestration for free, and this extension stays small.
 
-1. The **WorkBuddy desktop client is signed in** (that is where the session lives).
-2. A running gateway:
-   ```bash
-   node gateway.js --port 8790 --api-key workbuddy-local
-   ```
-3. VS Code 1.74+.
-
-The extension holds no credentials and never talks to the upstream directly. No gateway,
-no model — it will say so instead of failing obscurely.
-
-## Install (from source)
+Setup:
 
 ```bash
 cd vscode-extension
-npm install          # only needed for @types/vscode; runtime has no dependencies
+npx @vscode/vsce package
+code --install-extension workbuddy-agent-0.1.0.vsix
 ```
 
-Then either:
+Restart VS Code, open the Chat view, and pick a **WorkBuddy** model (look for the `★`
+prefix on free ones).
 
-- press <kbd>F5</kbd> in VS Code to launch an Extension Development Host, or
-- symlink/copy this folder into `~/.vscode/extensions/workbuddy-agent`.
+## 2. Standalone agent panel
+
+A self-contained agent in the **secondary side bar** (the right-hand column, next to the
+editor), plus a `@workbuddy` chat participant. Use this when you do not have Copilot
+Chat installed.
+
+Open it with the command palette → **WorkBuddy Agent: Open Agent Panel (right side)**.
+
+It has:
+
+- a streaming conversation with **collapsible tool steps** (`read_file`, `apply_edit`, `run_terminal`, …)
+- **inline permission prompts** — Allow once / Allow for session / Deny, instead of modal dialogs
+- a **status strip** showing what is happening right now (Thinking… / Running read_file… / Waiting for your approval)
+- **session persistence** — conversations survive closing the panel and reloading the window
+- **model + reasoning-depth pickers**, and a per-session credit total
 
 ## Settings
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `workbuddyAgent.gatewayUrl` | `http://127.0.0.1:8790` | Gateway base URL, with or without `/v1` |
-| `workbuddyAgent.apiKey` | *(empty)* | Must match the gateway's `--api-key`; empty if it runs keyless |
-| `workbuddyAgent.model` | `hy4-preview-f` | Default model. **Free** — do not confuse with `hy4-preview`, which bills |
-| `workbuddyAgent.maxToolSteps` | `12` | Cap on tool calls per turn |
-| `workbuddyAgent.autoApproveFileWrites` | `false` | Skip the write confirmation |
-| `workbuddyAgent.autoApproveTerminal` | `false` | Skip the command confirmation |
+| `workbuddyAgent.gatewayUrl` | `http://127.0.0.1:8790` | Gateway base URL. Probed automatically, including the in-WSL port. |
+| `workbuddyAgent.apiKey` | *(auto)* | Gateway key. Read from the gateway's own start script when left empty. |
+| `workbuddyAgent.model` | `hy4-preview-f` | Default model id. |
+| `workbuddyAgent.reasoningEffort` | `off` | `off` / `minimal` / `low` / `medium` / `high` / `xhigh`. `off` omits the field entirely. |
+| `workbuddyAgent.maxToolSteps` | `50` | Tool calls allowed per turn before the run stops. |
+| `workbuddyAgent.autoApproveFileWrites` | `false` | Skip the prompt for file writes. |
+| `workbuddyAgent.autoApproveTerminal` | `false` | Skip the prompt for shell commands. |
 
-## Commands
+The same settings apply to both integration paths.
 
-| Command | |
-|---|---|
-| `WorkBuddy Agent: Open Chat` | focus the sidebar |
-| `WorkBuddy Agent: New Chat` | clear the conversation |
-| `WorkBuddy Agent: Set Gateway URL` | |
-| `WorkBuddy Agent: Set API Key` | stored in VS Code settings |
-| `WorkBuddy Agent: Refresh Model List` | |
-| `WorkBuddy Agent: Explain Selection` | uses the current selection as context |
+## Pick a free model
 
-## Notes and limits
-
-- **Tool steps are capped** (`maxToolSteps`) so a confused model cannot loop forever.
-- **Paths are confined to the workspace**; `../` escapes are rejected before any file is touched.
-- **Terminal output is truncated** to 8k chars and each command has a 60s timeout.
-- **Reasoning models need a generous budget.** They spend output tokens on reasoning first;
-  the default request budget is 8192. If a model returns empty text with `finish_reason:
-  length`, the panel tells you rather than showing a blank answer.
-- The conversation history is **not persisted** — closing the panel clears it.
-- This is a thin client on purpose: billing, caching and safety live in the gateway, so the
-  two stay consistent.
-
-## Files
+Twelve of the 32 models cost nothing (`credit: 0` as measured 2026-09):
 
 ```
-vscode-extension/
-├── package.json          manifest, settings, commands
-└── src/
-    ├── extension.js      view provider, webview UI, commands
-    ├── agent.js          the tool loop
-    ├── client.js         gateway HTTP/SSE client (own error types)
-    └── tools.js          tool declarations + execution + approval
+auto  hy4-preview-f  hy3  glm-5.3-flash  glm-5.1  glm-5.0-turbo
+kimi-k2.7  kimi-k2.6  kimi-k2.5  minimax-m2.7  deepseek-v4-flash  deepseek-v3.2
 ```
+
+> **`hy4-preview` vs `hy4-preview-f`** — one suffix apart. The official client's UI calls
+> both "Hy4 preview", but only `-f` is free; the other bills. Free models are marked `★`
+> in the picker.
+
+Cheapest paid models start at `deepseek-v4.1-flash` (×0.03).
+
+## Requirements
+
+- VS Code **1.104+** (for `lm.registerLanguageModelChatProvider`)
+- Node ≥ 18 on the machine running the gateway
+- The gateway running — see the [main README](../README.md#one-command)
+
+## Troubleshooting
+
+**No WorkBuddy group in the model picker**
+
+The provider never returns an empty list, so the group should always be visible. If it
+is not:
+
+1. Confirm the extension is active: command palette → **Developer: Show Running Extensions**
+2. Check the log: **Developer: Show Logs…** → *Extension Host*, look for `workbuddy`
+3. Fully quit and restart VS Code — the provider registers during activation, so a
+   window reload is not always enough.
+
+**`No gateway answered`**
+
+Start it. In WSL, use `bash ../wsl/start-gateway.sh` — a gateway bound to Windows
+loopback cannot be reached from WSL, and on Windows 10 neither mirrored networking nor
+`portproxy` is an option.
+
+**HTTP 401 while listing models**
+
+The key does not match. Set `workbuddyAgent.apiKey`, or make sure the gateway was
+started with the same `--api-key`.
+
+**Every request fails with a connection error**
+
+Something on the machine is intercepting `fetch` (a system proxy, for example). This
+extension deliberately uses Node's `http` module rather than `fetch` for that reason —
+if you still see it, check `HTTP_PROXY` / `HTTPS_PROXY` in the environment VS Code runs in.
+
+**"Stopped after N tool calls"**
+
+The per-turn tool limit. Raise `workbuddyAgent.maxToolSteps`, or reply `continue`.
+
+## Development
+
+```bash
+cd vscode-extension
+npx @vscode/vsce package --no-dependencies
+code --install-extension workbuddy-agent-0.1.0.vsix --force
+```
+
+To install into WSL as well: `bash ../wsl/install-extension.sh`.

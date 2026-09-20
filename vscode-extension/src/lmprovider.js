@@ -1,0 +1,347 @@
+'use strict';
+/**
+ * Language model provider for VS Code's model picker.
+ *
+ * This is the integration that matters: by registering a `LanguageModelChatProvider`
+ * the WorkBuddy models show up in the Chat view's model dropdown, so GitHub Copilot
+ * Chat (or any other chat participant) drives the conversation with its own agent
+ * loop, tools, approvals and diff UI. We only supply the model.
+ *
+ * Video the same shape as other community providers: a vendor id plus an
+ * implementation of the three provider methods.
+ *
+ * API notes (verified against VS Code 1.138's vscode.d.ts):
+ *   - registerLanguageModelChatProvider(vendor, provider)
+ *   - provideLanguageModelChatInformation(options, token) -> LanguageModelChatInformation[]
+ *   - provideLanguageModelChatResponse(model, messages, options, progress, token)
+ *   - provideTokenCount(model, text, token) -> number
+ * Progress parts are LanguageModelTextPart / LanguageModelToolCallPart /
+ * LanguageModelDataPart; unknown part kinds must simply be ignored.
+ */
+
+const vscode = require('vscode');
+const { createClient } = require('./client');
+const { discoverGatewayApiKey } = require('./discover');
+const { findGateway } = require('./discover-net');
+
+const VENDOR = 'workbuddy';
+
+function cfg() {
+  return vscode.workspace.getConfiguration('workbuddyAgent');
+}
+
+function resolveApiKey() {
+  const configured = String(cfg().get('apiKey', '') || '').trim();
+  if (configured) return configured;
+  const found = discoverGatewayApiKey();
+  return found ? found.key : '';
+}
+
+/** The gateway URL, probed once and cached for the session. */
+let cachedGatewayUrl = null;
+async function resolveGatewayUrl() {
+  if (cachedGatewayUrl) return cachedGatewayUrl;
+  const configured = String(cfg().get('gatewayUrl', '') || '');
+  let port = 8790;
+  try { port = Number(new URL(configured).port) || 8790; } catch { /* default */ }
+  const found = await findGateway(configured, port, 1500);
+  cachedGatewayUrl = found.url || configured || 'http://127.0.0.1:8790';
+  return cachedGatewayUrl;
+}
+
+/** Model cache, refreshed when the gateway's list changes. */
+let modelCache = [];
+let modelCacheAt = 0;
+const MODEL_TTL_MS = 30_000;
+
+/**
+ * Shown when the gateway cannot be reached, so the WorkBuddy group does not
+ * disappear from the picker. Selecting one surfaces the real connection error.
+ */
+const STATIC_FALLBACK_MODELS = [
+  { id: 'hy4-preview-f', free: true },
+  { id: 'deepseek-v4-flash', free: true },
+  { id: 'auto', free: true },
+  { id: 'deepseek-v4.1-flash', free: false },
+];
+
+async function loadModels(force) {
+  if (!force && modelCache.length && Date.now() - modelCacheAt < MODEL_TTL_MS) return modelCache;
+  const gatewayUrl = await resolveGatewayUrl();
+  const client = createClient({ gatewayUrl, apiKey: resolveApiKey() });
+  const models = await client.listModels();
+  modelCache = models;
+  modelCacheAt = Date.now();
+  return models;
+}
+
+/**
+ * Convert VS Code chat messages into the OpenAI shape the gateway accepts.
+ *
+ * The part types that matter here:
+ *   LanguageModelTextPart       -> text
+ *   LanguageModelToolCallPart   -> assistant message with tool_calls
+ *   LanguageModelToolResultPart -> role:"tool" message carrying the result
+ *   LanguageModelDataPart       -> image_url
+ *
+ * Parts we do not understand are skipped rather than thrown on, so a future API
+ * addition degrades instead of breaking the provider.
+ */
+function toOpenAIMessages(messages) {
+  const out = [];
+
+  const textOf = (part) => {
+    if (!part) return '';
+    if (typeof part.value === 'string') return part.value;
+    if (typeof part.text === 'string') return part.text;
+    return '';
+  };
+
+  for (const m of messages || []) {
+    const isUser = m.role === vscode.LanguageModelChatMessageRole.User;
+    const content = m.content;
+
+    if (typeof content === 'string') {
+      out.push({ role: isUser ? 'user' : 'assistant', content });
+      continue;
+    }
+    if (!Array.isArray(content)) continue;
+
+    const texts = [];
+    const images = [];
+    const toolCalls = [];
+    const toolResults = [];
+
+    for (const part of content) {
+      if (!part) continue;
+      // Tool call requested by the assistant.
+      if (typeof part.callId === 'string' && typeof part.name === 'string'
+          && part.input !== undefined && !('content' in part)) {
+        toolCalls.push({
+          id: part.callId,
+          type: 'function',
+          function: { name: part.name, arguments: JSON.stringify(part.input || {}) },
+        });
+        continue;
+      }
+      // Tool result fed back by the caller.
+      if (typeof part.callId === 'string' && 'content' in part) {
+        const inner = Array.isArray(part.content) ? part.content : [part.content];
+        const text = inner.map(textOf).filter(Boolean).join('\n');
+        toolResults.push({ role: 'tool', tool_call_id: part.callId, content: text || '(empty)' });
+        continue;
+      }
+      // Image data part.
+      if (part.mime && part.data) {
+        const bytes = part.data instanceof Uint8Array ? part.data : Buffer.from(part.data);
+        images.push({
+          type: 'image_url',
+          image_url: { url: 'data:' + part.mime + ';base64,' + Buffer.from(bytes).toString('base64') },
+        });
+        continue;
+      }
+      // Plain text.
+      const t = textOf(part);
+      if (t) texts.push(t);
+    }
+
+    // Tool results are their own messages and must keep their callId pairing.
+    for (const tr of toolResults) out.push(tr);
+    if (!texts.length && !images.length && !toolCalls.length) continue;
+
+    const msg = { role: isUser ? 'user' : 'assistant' };
+    if (images.length) {
+      msg.content = [...texts.map(t => ({ type: 'text', text: t })), ...images];
+    } else {
+      msg.content = texts.join('\n') || null;
+    }
+    if (toolCalls.length) msg.tool_calls = toolCalls;
+    out.push(msg);
+  }
+
+  return out;
+}
+
+/**
+ * Build the LanguageModelChatInformation entries the picker shows.
+ *
+ * LanguageModelChatInformation is an interface, not a class — these must be plain
+ * object literals.
+ */
+async function buildInformation() {
+  let models = [];
+  try {
+    models = await loadModels(false);
+  } catch {
+    return [];
+  }
+  return models.map((m) => ({
+    id: m.id,
+    name: (m.tier === 'free' ? '★ ' : '') + m.id,
+    family: 'workbuddy',
+    version: '1',
+    detail: m.tier === 'free' ? 'WorkBuddy · free' : 'WorkBuddy · bills credits',
+    tooltip: 'Provided by the local workbuddy-gateway',
+    maxInputTokens: 128000,
+    maxOutputTokens: 8192,
+    capabilities: {
+      toolCalling: true,
+      imageInput: true,
+    },
+  }));
+}
+
+class WorkBuddyChatProvider {
+  constructor(context) {
+    this.context = context;
+    this.onDidChangeEmitter = new vscode.EventEmitter();
+    this.onDidChangeLanguageModelChatInformation = this.onDidChangeEmitter.event;
+  }
+
+  /** Refresh the picker (call after the gateway URL or key changes). */
+  refresh() {
+    modelCache = [];
+    modelCacheAt = 0;
+    cachedGatewayUrl = null;
+    this.onDidChangeEmitter.fire();
+  }
+
+  async provideLanguageModelChatInformation(options, token) {
+    // Never return an empty list here. VS Code treats an empty result as "this
+    // provider has no models" and stops asking, which silently removes the group
+    // from the model picker. A `silent` call means "do not prompt the user for
+    // credentials", not "return nothing" — so answer it from the same source,
+    // just without any interactive fallback.
+    try {
+      const infos = await buildInformation();
+      if (infos.length) return infos;
+    } catch {
+      // fall through to the static floor below
+    }
+    // The gateway may simply not be running yet. Offering a small static list
+    // keeps the group visible so the user has something to select (and can see
+    // the error when they try), instead of the group vanishing.
+    return STATIC_FALLBACK_MODELS.map((m) => ({
+      id: m.id,
+      name: (m.free ? '★ ' : '') + m.id,
+      family: 'workbuddy',
+      version: '1',
+      detail: m.free ? 'WorkBuddy · free' : 'WorkBuddy · bills credits',
+      tooltip: 'Requires the local workbuddy-gateway to be running',
+      maxInputTokens: 128000,
+      maxOutputTokens: 8192,
+      capabilities: { toolCalling: true, imageInput: true },
+    }));
+  }
+
+  async provideLanguageModelChatResponse(model, messages, options, progress, token) {
+    const gatewayUrl = await resolveGatewayUrl();
+    const client = createClient({ gatewayUrl, apiKey: resolveApiKey() });
+
+    const body = {
+      model: model.id,
+      messages: toOpenAIMessages(messages),
+      stream: true,
+      stream_options: { include_usage: true },
+    };
+
+    // Respect the caller's tool mode. "required" must force a tool call; "none"
+    // must not offer tools at all.
+    const tools = mapTools(options && options.tools);
+    const mode = (options && options.toolMode) || 'auto';
+    if (tools && mode !== 'none') {
+      body.tools = tools;
+      body.tool_choice = mode === 'required' ? 'required' : 'auto';
+    }
+
+    const effort = String(cfg().get('reasoningEffort', 'off') || 'off').toLowerCase();
+    if (effort && effort !== 'off') body.reasoning_effort = effort;
+
+    // Accumulate tool calls across chunks: they arrive incrementally by index.
+    const toolCalls = new Map();
+    let textBuffer = '';
+
+    const flushText = () => {
+      if (textBuffer) {
+        progress.report(new vscode.LanguageModelTextPart(textBuffer));
+        textBuffer = '';
+      }
+    };
+
+    const abort = new AbortController();
+    const sub = token && token.onCancellationRequested(() => abort.abort());
+
+    try {
+      await client.streamChat(body, (payload) => {
+        if (payload.error) {
+          throw new Error(typeof payload.error === 'string' ? payload.error : JSON.stringify(payload.error));
+        }
+        for (const choice of payload.choices || []) {
+          const d = choice.delta || {};
+          if (typeof d.content === 'string' && d.content) {
+            textBuffer += d.content;
+            // Report in reasonably sized batches to avoid per-token overhead.
+            if (textBuffer.length >= 24) flushText();
+          }
+          if (Array.isArray(d.tool_calls)) {
+            for (const tc of d.tool_calls) {
+              const i = tc.index === undefined ? 0 : tc.index;
+              const slot = toolCalls.get(i) || { id: null, name: '', args: '' };
+              if (tc.id) slot.id = tc.id;
+              const fn = tc.function || {};
+              if (fn.name) slot.name += fn.name;
+              if (fn.arguments) slot.args += fn.arguments;
+              toolCalls.set(i, slot);
+            }
+          }
+        }
+      }, abort.signal);
+    } finally {
+      if (sub && typeof sub.dispose === 'function') sub.dispose();
+      flushText();
+    }
+
+    // Emit any tool calls as proper parts so the caller can execute them.
+    for (const [, call] of [...toolCalls.entries()].sort((a, b) => a[0] - b[0])) {
+      if (!call.name) continue;
+      let input = {};
+      try { input = call.args ? JSON.parse(call.args) : {}; } catch { input = {}; }
+      progress.report(new vscode.LanguageModelToolCallPart(call.id || ('call_' + call.name), call.name, input));
+    }
+  }
+
+  async provideTokenCount(model, text, token) {
+    // No tokenizer available; a 4-chars-per-token estimate is what the API
+    // expects from providers that cannot do better.
+    const s = typeof text === 'string' ? text : JSON.stringify(text);
+    return Math.max(1, Math.ceil(String(s).length / 4));
+  }
+}
+
+/** Map VS Code tool definitions onto OpenAI function tools. */
+function mapTools(tools) {
+  if (!Array.isArray(tools) || !tools.length) return undefined;
+  return tools.map((t) => ({
+    type: 'function',
+    function: {
+      name: t.name,
+      description: t.description || '',
+      parameters: t.inputSchema || { type: 'object', properties: {} },
+    },
+  }));
+}
+
+/** Register the provider; returns the instance so callers can refresh it. */
+function registerLanguageModelProvider(context) {
+  if (!vscode.lm || typeof vscode.lm.registerLanguageModelChatProvider !== 'function') {
+    return null;
+  }
+  const provider = new WorkBuddyChatProvider(context);
+  context.subscriptions.push(
+    vscode.lm.registerLanguageModelChatProvider(VENDOR, provider),
+    provider.onDidChangeEmitter
+  );
+  return provider;
+}
+
+module.exports = { registerLanguageModelProvider, buildInformation, toOpenAIMessages, mapTools, VENDOR };

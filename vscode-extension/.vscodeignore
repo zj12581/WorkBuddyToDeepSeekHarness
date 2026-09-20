@@ -1,0 +1,10 @@
+﻿.vscode/**
+.vscode-test/**
+node_modules/**
+.git/**
+.gitignore
+*.vsix
+**/*.map
+# local scratch scripts must never ship
+_*
+probe-*
