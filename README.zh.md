@@ -78,7 +78,7 @@ node --version      # 需要 v18.x 或更高
 ### 第一步 —— 克隆
 
 ```bash
-git clone https://github.com/zj12581/WorkBuddyToDeepSeekHarness.git
+git clone https://github.com/zj12581/WorkBuddyToOpenAI.git
 cd WorkBuddyToDeepSeekHarness
 ```
 

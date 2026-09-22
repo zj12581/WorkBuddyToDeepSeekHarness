@@ -78,7 +78,7 @@ The gateway binds `127.0.0.1` by default. Anyone who can reach the port can spen
 ### Step 1 — Clone
 
 ```bash
-git clone https://github.com/zj12581/WorkBuddyToDeepSeekHarness.git
+git clone https://github.com/zj12581/WorkBuddyToOpenAI.git
 cd WorkBuddyToDeepSeekHarness
 ```
 

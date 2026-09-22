@@ -45,10 +45,10 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/zj12581/WorkBuddyToDeepSeekHarness.git"
+    "url": "git+https://github.com/zj12581/WorkBuddyToOpenAI.git"
   },
   "bugs": {
-    "url": "https://github.com/zj12581/WorkBuddyToDeepSeekHarness/issues"
+    "url": "https://github.com/zj12581/WorkBuddyToOpenAI/issues"
   },
-  "homepage": "https://github.com/zj12581/WorkBuddyToDeepSeekHarness#readme"
+  "homepage": "https://github.com/zj12581/WorkBuddyToOpenAI#readme"
 }
