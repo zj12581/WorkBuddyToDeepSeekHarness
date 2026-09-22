@@ -224,10 +224,13 @@ async function fetchBalance() {
   };
 }
 
-/** Cached wrapper so a repeated `/balance` does not hammer the endpoint. */
-async function balance() {
+/**
+ * Cached wrapper so a repeated `/balance` does not hammer the endpoint.
+ * @param force - bypass the cache and re-query.
+ */
+async function balance(force) {
   const now = Date.now();
-  if (cache && now - cache.at < CACHE_MS) return { ...cache.value, cached: true };
+  if (!force && cache && now - cache.at < CACHE_MS) return { ...cache.value, cached: true };
   const value = await fetchBalance();
   cache = { at: now, value };
   return { ...value, cached: false };
@@ -284,6 +287,12 @@ function render(result) {
     + ' credits remaining'
     + (result.percent === null ? '' : '  (' + result.percent + '%)'));
   lines.push('  ' + fmt(result.totalUsed) + ' used');
+
+  if (result.percent !== null && result.percent <= LOW_WATER_PERCENT) {
+    lines.push('');
+    lines.push('  ! Only ' + result.percent + '% left. Check the cycle end dates below;');
+    lines.push('    free models are listed with `node probes/probe-models.js`.');
+  }
   lines.push('');
 
   const grouped = groupPackages(result.packages)
@@ -315,12 +324,51 @@ function render(result) {
 // plugin
 // ---------------------------------------------------------------------------
 
+const USAGE = 'Usage: /balance [--json] [--refresh]';
+
+/**
+ * Below this share of the total, the balance line carries a warning.
+ * Credits run out mid-session rather than at a convenient moment, so the number
+ * is worth flagging before it reaches zero.
+ */
+const LOW_WATER_PERCENT = 15;
+
+/** Machine-readable form for scripting: `jq .totalRemain` and the like. */
+function renderJson(result) {
+  return JSON.stringify({
+    domain: result.domain,
+    totalRemain: result.totalRemain,
+    totalSize: result.totalSize,
+    totalUsed: result.totalUsed,
+    percent: result.percent,
+    cached: result.cached,
+    packages: groupPackages(result.packages).map((g) => ({
+      name: g.name,
+      remain: g.remain,
+      size: g.size,
+      used: g.used,
+      percent: g.percent,
+      grants: g.count,
+      cycleEnd: g.cycleEnd || null,
+    })),
+  }, null, 2);
+}
+
 /** Execute one `/balance` invocation. */
-async function execute(ctx) {
+async function execute(invocation) {
+  const args = String(invocation?.rawInput || '').trim().split(/\s+/).filter(Boolean);
+  const unknown = args.filter((a) => a !== '--json' && a !== '--refresh');
+  if (unknown.length) {
+    return { kind: 'error', text: 'Unknown option: ' + unknown.join(' ') + '\n' + USAGE };
+  }
+
   try {
-    const result = await balance();
+    const result = await balance(args.includes('--refresh'));
     if (!result.packages.length) {
       return { kind: 'success', text: 'No credit packages found on this account.' };
+    }
+    if (args.includes('--json')) {
+      return { kind: 'success', text: renderJson(result) };
     }
     return { kind: 'success', text: render(result) };
   } catch (error) {
@@ -337,7 +385,10 @@ function apply(ctx) {
     yield ctx.commands.register({
       name: 'balance',
       description: 'Show the WorkBuddy / CodeBuddy credit balance',
-      handler: () => execute(ctx),
+      // `input` is a descriptor, not a string: the registry validates
+      // { hint: string } and throws on anything else.
+      input: { hint: '--json | --refresh' },
+      handler: (invocation) => execute(invocation),
     });
   }, 'workbuddy-balance lifecycle');
 }

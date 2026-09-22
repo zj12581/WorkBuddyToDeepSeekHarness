@@ -15,6 +15,18 @@ WorkBuddy balance — www.workbuddy.cn
     0.00 / 500.00  0%   CodeBuddy个人体验版   (next cycle ends 2026-09-30)
 ```
 
+## 参数
+
+| 参数 | 作用 |
+|---|---|
+| 无 | 按套餐汇总的余额,结果缓存 30 秒 |
+| `--json` | 输出 JSON,给脚本用(`/balance --json \| jq .totalRemain`) |
+| `--refresh` | 绕过缓存,强制重新查询 |
+
+未知参数返回错误并给出用法,不会静默忽略。
+
+剩余不足 15% 时,输出里会多一行提醒。
+
 ## 安装
 
 ```bash
@@ -22,9 +34,13 @@ bash integrations/dsh/install-balance-plugin.sh          # 默认装进 web prof
 bash integrations/dsh/install-balance-plugin.sh headless # 或指定 profile
 ```
 
-脚本做三件事:把插件复制到 profile 的 `node_modules`(这样 Node 能按裸包名解析,和 DSH 解析自己的插件一样),往 `cordis.patch.yml` 加一行 loader 行,再验证一次能否按名字 import。重复执行是安全的 —— 已经装过就只报告,不重复加行。
+脚本把插件复制到 **`$DSH_HOME/profiles/node_modules`**,往该 profile 的 `cordis.patch.yml` 加一行 loader 行,再验证能否按裸包名 import。重复执行是安全的 —— 已经装过就只报告,不重复加行。
 
-装完重启 DSH,或依赖 profile 的 `patchReload: live` 自动重载。
+> **注意目录是 `profiles/node_modules`,不是 `profiles/<profile>/node_modules`。** DSH 从 profiles 那一层解析插件名(它自己的本地插件也都在那儿);装进 profile 自己的目录,文件会在磁盘上,但加载器找不到,`/balance` 静默不生效。
+
+装完重启 DSH,或依赖 `patchReload: live` 自动重载。
+
+> **改了插件源码后要重新同步。** 安装脚本是复制而非软链,`~/.dsh/profiles/node_modules/` 下那份不会跟着仓库变。重新跑一次安装脚本即可。
 
 ## 它读什么
 

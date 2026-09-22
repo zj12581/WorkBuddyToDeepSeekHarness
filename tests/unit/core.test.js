@@ -536,3 +536,44 @@ test('buildUpstreamBody: reasoning_effort "off" never reaches the wire', () => {
   }, false, { desensitize: true });
   assert.strictEqual(high.reasoning_effort, 'high', 'a real level must be forwarded');
 });
+
+// ---------------------------------------------------------------------------
+// model limits
+// ---------------------------------------------------------------------------
+
+test('modelLimits: known models report their measured context and output caps', () => {
+  // The spread is the point: clients that assume one value either waste a 1M
+  // window or overrun a 96K model.
+  const big = core.modelLimits('hy4-preview-f');
+  assert.strictEqual(big.contextWindow, 1000000);
+  assert.strictEqual(big.maxOutputTokens, 64000);
+
+  const small = core.modelLimits('deepseek-v3.2');
+  assert.strictEqual(small.contextWindow, 96000);
+  assert.strictEqual(small.maxOutputTokens, 32000);
+});
+
+test('modelLimits: an unknown id reports null, not a guessed default', () => {
+  // null tells the client "not measured". A fabricated number would be
+  // indistinguishable from a real small model and would truncate silently.
+  const unknown = core.modelLimits('no-such-model');
+  assert.strictEqual(unknown.contextWindow, null);
+  assert.strictEqual(unknown.maxOutputTokens, null);
+});
+
+test('modelLimits: every entry has both fields and sane values', () => {
+  for (const [id, limits] of Object.entries(core.MODEL_LIMITS)) {
+    assert.ok(Number.isInteger(limits.context) && limits.context > 0, id + ' needs a positive context');
+    assert.ok(Number.isInteger(limits.output) && limits.output > 0, id + ' needs a positive output cap');
+    // Output cannot exceed the context window.
+    assert.ok(limits.output <= limits.context, id + ' output must fit in the context window');
+  }
+});
+
+test('modelLimits: the table covers the free tier', () => {
+  // The free models are the ones a new user picks first; a gap here shows up as
+  // the client silently falling back to a conservative limit.
+  for (const id of ['auto', 'hy4-preview-f', 'hy3', 'glm-5.3-flash', 'deepseek-v4-flash', 'deepseek-v3.2']) {
+    assert.ok(core.MODEL_LIMITS[id], id + ' must have limits declared');
+  }
+});

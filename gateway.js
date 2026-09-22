@@ -37,6 +37,7 @@ const {
   buildUpstreamBody, isBlockPayload, StreamAccumulator,
   makeChunk, makeUsageChunk, SSE_DONE, sseFrame, countZeroWidth,
   sessionIdFromHeaders, resolveConversationId,
+  modelLimits,
 } = require('./lib/core');
 const { Credential } = require('./lib/credentials');
 
@@ -498,6 +499,9 @@ const server = http.createServer(async (req, res) => {
           owned_by: 'workbuddy',
           // measured: free = credit is always 0, paid = billed per request
           tier: modelTier(id),
+          // Context and output caps, so a client does not have to hardcode one
+          // value for every model. null means "not measured", not "unlimited".
+          ...modelLimits(id),
         })),
       });
     }

@@ -57,12 +57,17 @@ const MODEL_TTL_MS = 30_000;
 /**
  * Shown when the gateway cannot be reached, so the WorkBuddy group does not
  * disappear from the picker. Selecting one surfaces the real connection error.
+ *
+ * The limits mirror what the gateway reports for these ids. They are duplicated
+ * rather than fetched because this list exists precisely for the case where
+ * fetching fails, and a wrong value here (a 1M model advertised as 128K) would
+ * limit a conversation for no reason.
  */
 const STATIC_FALLBACK_MODELS = [
-  { id: 'hy4-preview-f', free: true },
-  { id: 'deepseek-v4-flash', free: true },
-  { id: 'auto', free: true },
-  { id: 'deepseek-v4.1-flash', free: false },
+  { id: 'hy4-preview-f', free: true, context: 1000000, output: 64000 },
+  { id: 'deepseek-v4-flash', free: true, context: 1000000, output: 50000 },
+  { id: 'auto', free: true, context: 256000, output: 32000 },
+  { id: 'deepseek-v4.1-flash', free: false, context: 1000000, output: 128000 },
 ];
 
 async function loadModels(force) {
@@ -163,6 +168,25 @@ function toOpenAIMessages(messages) {
 }
 
 /**
+ * Fallbacks used only when the gateway does not report a limit.
+ *
+ * The real ranges are wide — 1M down to 96K context. Declaring one number for
+ * every model is wrong in both directions: it wastes most of a 1M model's window,
+ * and it promises more than a 96K model has, so the host fills the context and the
+ * request fails mid-conversation. The fallback is deliberately the smallest of the
+ * real values, because under-claiming costs a little room while over-claiming
+ * causes a hard error.
+ */
+const FALLBACK_INPUT_TOKENS = 96000;
+const FALLBACK_OUTPUT_TOKENS = 8192;
+
+/** Coerce a gateway-reported limit into a usable positive integer, or null. */
+function positiveInt(v) {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
+}
+
+/**
  * Build the LanguageModelChatInformation entries the picker shows.
  *
  * LanguageModelChatInformation is an interface, not a class — these must be plain
@@ -175,20 +199,26 @@ async function buildInformation() {
   } catch {
     return [];
   }
-  return models.map((m) => ({
-    id: m.id,
-    name: (m.tier === 'free' ? '★ ' : '') + m.id,
-    family: 'workbuddy',
-    version: '1',
-    detail: m.tier === 'free' ? 'WorkBuddy · free' : 'WorkBuddy · bills credits',
-    tooltip: 'Provided by the local workbuddy-gateway',
-    maxInputTokens: 128000,
-    maxOutputTokens: 8192,
-    capabilities: {
-      toolCalling: true,
-      imageInput: true,
-    },
-  }));
+  return models.map((m) => {
+    const context = positiveInt(m.contextWindow);
+    const output = positiveInt(m.maxOutputTokens);
+    const limitNote = context ? '  ·  ' + Math.round(context / 1000) + 'K ctx' : '';
+    const tierNote = m.tier === 'free' ? 'free' : 'bills credits';
+    return {
+      id: m.id,
+      name: (m.tier === 'free' ? '★ ' : '') + m.id,
+      family: 'workbuddy',
+      version: '1',
+      detail: 'WorkBuddy · ' + tierNote + limitNote,
+      tooltip: 'Provided by the local workbuddy-gateway',
+      maxInputTokens: context || FALLBACK_INPUT_TOKENS,
+      maxOutputTokens: output || FALLBACK_OUTPUT_TOKENS,
+      capabilities: {
+        toolCalling: true,
+        imageInput: true,
+      },
+    };
+  });
 }
 
 class WorkBuddyChatProvider {
@@ -226,10 +256,11 @@ class WorkBuddyChatProvider {
       name: (m.free ? '★ ' : '') + m.id,
       family: 'workbuddy',
       version: '1',
-      detail: m.free ? 'WorkBuddy · free' : 'WorkBuddy · bills credits',
+      detail: 'WorkBuddy · ' + (m.free ? 'free' : 'bills credits')
+        + '  ·  ' + Math.round(m.context / 1000) + 'K ctx',
       tooltip: 'Requires the local workbuddy-gateway to be running',
-      maxInputTokens: 128000,
-      maxOutputTokens: 8192,
+      maxInputTokens: m.context || FALLBACK_INPUT_TOKENS,
+      maxOutputTokens: m.output || FALLBACK_OUTPUT_TOKENS,
       capabilities: { toolCalling: true, imageInput: true },
     }));
   }
