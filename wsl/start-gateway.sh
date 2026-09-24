@@ -31,15 +31,44 @@ say() { printf '[workbuddy-wsl] %s\n' "$*"; }
 die() { printf '[workbuddy-wsl] %s\n' "$*" >&2; exit 1; }
 
 # --- already running? -------------------------------------------------------
-if [ -f "$PID_FILE" ]; then
-  OLD_PID="$(cat "$PID_FILE" 2>/dev/null || true)"
-  if [ -n "${OLD_PID:-}" ] && kill -0 "$OLD_PID" 2>/dev/null; then
-    say "already running (pid ${OLD_PID}) on port ${PORT}"
-    say "health: $(curl -s -m 3 -o /dev/null -w '%{http_code}' "http://127.0.0.1:${PORT}/health" 2>/dev/null || echo '?')"
+# Scoped to THIS port, by process rather than by the pid file.
+#
+# Matching every `gateway.js` would be wrong: an instance on another port is a
+# different service (the 8792 used during testing, say), and refusing to start
+# because of it makes the port argument useless. The pid file is also not
+# evidence — a crashed process leaves it behind, and a recycled pid would then
+# point at an unrelated program.
+PORT_PIDS="$(pgrep -f "gateway\.js.*--port ${PORT}([^0-9]|\$)" 2>/dev/null || true)"
+if [ -n "${PORT_PIDS:-}" ]; then
+  COUNT="$(printf '%s\n' "$PORT_PIDS" | wc -l | tr -d ' ')"
+  if [ "$COUNT" -gt 1 ]; then
+    say "WARNING: ${COUNT} gateway processes are claiming port ${PORT}:"
+    for pid in $PORT_PIDS; do
+      tr '\0' ' ' < "/proc/${pid}/cmdline" 2>/dev/null | sed 's/^/  /'
+      echo ""
+    done
+    say "stop them first: bash wsl/stop-gateway.sh --port ${PORT}"
+    exit 1
+  fi
+  CODE="$(curl -s -m 3 -o /dev/null -w '%{http_code}' -H "Authorization: Bearer ${API_KEY}" "http://127.0.0.1:${PORT}/health" 2>/dev/null || echo '000')"
+  if [ "$CODE" = "200" ]; then
+    say "already running (pid ${PORT_PIDS}) on port ${PORT}, healthy"
     exit 0
   fi
-  rm -f "$PID_FILE"
+  # Process alive but not answering: wedged, or still starting up.
+  say "a gateway process (pid ${PORT_PIDS}) is using port ${PORT} but /health answers ${CODE}"
+  say "stop it first: bash wsl/stop-gateway.sh --port ${PORT}"
+  exit 1
 fi
+
+# Instances on other ports are fine, but say so: they are easy to forget and they
+# all share one auth file.
+OTHERS="$(pgrep -f 'gateway\.js' 2>/dev/null || true)"
+if [ -n "${OTHERS:-}" ]; then
+  say "note: another gateway is already running on a different port:"
+  pgrep -af 'gateway\.js' | sed 's/^/  /'
+fi
+rm -f "$PID_FILE"
 
 # --- locate node ------------------------------------------------------------
 command -v node >/dev/null 2>&1 || die "node not found in WSL. Install it with: sudo apt install nodejs"
